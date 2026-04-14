@@ -41,7 +41,7 @@ async function migrer() {
     )
   `)
 
-  const dossierMigrations = path.join(__dirname, '../../database/migrations')
+  const dossierMigrations = path.join(__dirname, '../../../database/migrations')
   const fichiers = fs.readdirSync(dossierMigrations)
     .filter(f => f.endsWith('.sql'))
     .sort()

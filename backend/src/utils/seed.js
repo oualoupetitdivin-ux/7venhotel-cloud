@@ -37,7 +37,7 @@ async function seeder() {
   const demoHash       = await hash('demo123')
 
   // Appliquer le fichier seed SQL
-  const dossierSeeds = path.join(__dirname, '../../database/seeds')
+  const dossierSeeds = path.join(__dirname, '../../../database/seeds')
   const fichiers = fs.readdirSync(dossierSeeds).filter(f => f.endsWith('.sql')).sort()
 
   for (const fichier of fichiers) {

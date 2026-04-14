@@ -1,0 +1,42 @@
+# Dépendances
+node_modules/
+.npm
+
+# Environnement (CRITIQUE — ne jamais versionner)
+.env
+.env.local
+.env.production
+
+# Build Next.js
+frontend/.next/
+frontend/out/
+
+# Logs
+logs/
+*.log
+
+# Uploads utilisateur
+uploads/rooms/*.jpg
+uploads/rooms/*.png
+uploads/rooms/*.webp
+uploads/avatars/*
+uploads/temp/*
+
+# Backups DB
+database/backups/*.sql
+database/backups/*.dump
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# PM2
+.pm2/
+
+# Tests
+coverage/

@@ -1,0 +1,97 @@
+{
+  "app": { "nom": "7venHotel Cloud", "slogan": "Next-generation hotel management platform" },
+  "nav": {
+    "tableau_de_bord": "Dashboard", "reservations": "Reservations", "planning": "Timeline",
+    "chambres": "Rooms", "clients": "Clients", "menage": "Housekeeping",
+    "maintenance": "Maintenance", "restaurant": "Restaurant", "cuisine": "Kitchen",
+    "facturation": "Billing", "analytique": "Analytics", "parametres": "Settings",
+    "personnel": "Staff", "aide": "Help Center", "ia": "Ouwalou AI"
+  },
+  "auth": {
+    "connexion": "Login", "deconnexion": "Logout", "email": "Email address",
+    "mot_de_passe": "Password", "se_connecter": "Sign in", "bienvenue": "Welcome",
+    "identifiants_incorrects": "Invalid credentials", "session_expiree": "Session expired, please login again"
+  },
+  "dashboard": {
+    "titre": "Dashboard", "occupation": "Occupancy Rate", "recettes_jour": "Today's Revenue",
+    "arrivees": "Today's Arrivals", "departs": "Today's Departures", "adr": "ADR",
+    "revpar": "RevPAR", "alertes": "Alerts", "taches_ouvertes": "Open Tasks", "tickets_urgents": "Urgent Tickets"
+  },
+  "reservations": {
+    "titre": "Reservations", "nouvelle": "New Reservation", "numero": "Booking #",
+    "client": "Guest", "chambre": "Room", "arrivee": "Check-in", "depart": "Check-out",
+    "nuits": "Nights", "statut": "Status", "montant": "Amount", "source": "Source",
+    "confirmer": "Confirm", "annuler": "Cancel", "checkin": "Check-in", "checkout": "Check-out",
+    "statuts": {
+      "tentative": "Tentative", "confirmee": "Confirmed", "arrivee": "Checked In",
+      "depart_aujourd_hui": "Checking Out", "annulee": "Cancelled", "no_show": "No Show"
+    }
+  },
+  "chambres": {
+    "titre": "Rooms", "numero": "Number", "type": "Type", "etage": "Floor", "statut": "Status", "tarif": "Rate / night",
+    "statuts": {
+      "libre_propre": "Clean & Available", "occupee": "Occupied", "sale": "Dirty",
+      "nettoyage": "Cleaning", "inspection": "Inspection", "hors_service": "Out of Order"
+    }
+  },
+  "clients": {
+    "titre": "Clients", "nouveau": "New Client", "prenom": "First Name", "nom": "Last Name",
+    "email": "Email", "telephone": "Phone", "nationalite": "Nationality",
+    "segment": "Segment", "sejours": "Stays", "fidelite": "Loyalty",
+    "segments": { "standard": "Standard", "vip": "VIP", "corporate": "Corporate", "groupe": "Group" }
+  },
+  "menage": {
+    "titre": "Housekeeping", "kanban": "Room Board", "taches": "My Tasks",
+    "assigner": "Assign", "demarrer": "Start", "terminer": "Finish", "valider": "Validate",
+    "statuts": {
+      "ouverte": "Open", "assignee": "Assigned", "en_cours": "In Progress",
+      "terminee": "Done", "validee": "Validated"
+    }
+  },
+  "maintenance": {
+    "titre": "Maintenance", "nouveau_ticket": "New Ticket",
+    "categorie": "Category", "priorite": "Priority", "technicien": "Technician",
+    "statuts": { "ouvert": "Open", "assigne": "Assigned", "en_cours": "In Progress", "resolu": "Resolved", "ferme": "Closed" },
+    "priorites": { "basse": "Low", "normale": "Normal", "haute": "High", "urgente": "Urgent" }
+  },
+  "restaurant": {
+    "titre": "Restaurant", "pos": "POS", "commande": "Order", "table": "Table",
+    "walk_in": "Walk-in", "chambre": "Room Charge", "envoyer_cuisine": "Send to Kitchen",
+    "payer": "Checkout", "total": "Total",
+    "statuts": { "nouvelle": "New", "en_preparation": "Preparing", "prete": "Ready", "servie": "Served" }
+  },
+  "facturation": {
+    "titre": "Billing", "nouvelle_facture": "New Invoice", "numero": "Invoice #", "date": "Date",
+    "montant_ht": "Subtotal", "taxes": "Taxes", "montant_ttc": "Total", "statut": "Status",
+    "telecharger": "Download PDF", "taxes_titre": "Tax Configuration"
+  },
+  "analytique": {
+    "titre": "Analytics", "aujourd_hui": "Today", "semaine": "Week",
+    "mois": "Month", "annee": "Year", "personnalise": "Custom", "exporter": "Export"
+  },
+  "common": {
+    "enregistrer": "Save", "annuler": "Cancel", "supprimer": "Delete", "modifier": "Edit",
+    "creer": "Create", "fermer": "Close", "confirmer": "Confirm", "chercher": "Search",
+    "chargement": "Loading…", "aucun_resultat": "No results", "succès": "Success",
+    "erreur": "Error", "avertissement": "Warning", "oui": "Yes", "non": "No",
+    "tout": "All", "actions": "Actions", "details": "Details", "retour": "Back",
+    "suivant": "Next", "precedent": "Previous", "nouveau": "New", "liste": "List",
+    "grille": "Grid", "filtre": "Filters", "exporter": "Export", "imprimer": "Print",
+    "refresh": "Refresh", "total": "Total", "par_page": "Per page", "sur": "of", "de": "of"
+  },
+  "devises": {
+    "XAF": "CFA Franc BEAC", "XOF": "CFA Franc BCEAO", "EUR": "Euro", "USD": "US Dollar",
+    "GBP": "British Pound", "MAD": "Moroccan Dirham", "NGN": "Nigerian Naira",
+    "ZAR": "South African Rand", "CAD": "Canadian Dollar", "CHF": "Swiss Franc",
+    "JPY": "Japanese Yen", "CNY": "Chinese Yuan"
+  },
+  "roles": {
+    "super_admin": "Super Admin", "manager": "Manager", "reception": "Front Desk",
+    "housekeeping": "Housekeeping", "restaurant": "Restaurant", "comptabilite": "Accounting",
+    "technicien": "Technician"
+  },
+  "ia": {
+    "titre": "Ouwalou AI", "placeholder": "Ask a question about your operations…",
+    "analyser": "Analyze", "alertes": "Alerts", "recommandations": "Recommendations", "previsions": "Forecasts"
+  }
+}

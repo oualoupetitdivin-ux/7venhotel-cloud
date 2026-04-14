@@ -1,0 +1,243 @@
+{
+  "app": {
+    "nom": "7venHotel Cloud",
+    "slogan": "La plateforme hôtelière de nouvelle génération"
+  },
+  "nav": {
+    "tableau_de_bord": "Tableau de bord",
+    "reservations": "Réservations",
+    "planning": "Planning",
+    "chambres": "Chambres",
+    "clients": "Clients",
+    "menage": "Ménage",
+    "maintenance": "Maintenance",
+    "restaurant": "Restaurant",
+    "cuisine": "Cuisine",
+    "facturation": "Facturation",
+    "analytique": "Analytique",
+    "parametres": "Paramètres",
+    "personnel": "Personnel",
+    "aide": "Centre d'aide",
+    "ia": "Ouwalou AI"
+  },
+  "auth": {
+    "connexion": "Connexion",
+    "deconnexion": "Déconnexion",
+    "email": "Adresse email",
+    "mot_de_passe": "Mot de passe",
+    "se_connecter": "Se connecter",
+    "bienvenue": "Bienvenue",
+    "identifiants_incorrects": "Identifiants incorrects",
+    "session_expiree": "Session expirée, veuillez vous reconnecter"
+  },
+  "dashboard": {
+    "titre": "Tableau de bord",
+    "occupation": "Taux d'occupation",
+    "recettes_jour": "Recettes du jour",
+    "arrivees": "Arrivées aujourd'hui",
+    "departs": "Départs aujourd'hui",
+    "adr": "Tarif moyen (ADR)",
+    "revpar": "RevPAR",
+    "alertes": "Alertes",
+    "taches_ouvertes": "Tâches en attente",
+    "tickets_urgents": "Tickets urgents"
+  },
+  "reservations": {
+    "titre": "Réservations",
+    "nouvelle": "Nouvelle réservation",
+    "numero": "N° Réservation",
+    "client": "Client",
+    "chambre": "Chambre",
+    "arrivee": "Arrivée",
+    "depart": "Départ",
+    "nuits": "Nuits",
+    "statut": "Statut",
+    "montant": "Montant",
+    "source": "Source",
+    "confirmer": "Confirmer",
+    "annuler": "Annuler",
+    "checkin": "Check-in",
+    "checkout": "Check-out",
+    "statuts": {
+      "tentative": "Tentative",
+      "confirmee": "Confirmée",
+      "arrivee": "Arrivée",
+      "depart_aujourd_hui": "Départ aujourd'hui",
+      "annulee": "Annulée",
+      "no_show": "No show"
+    }
+  },
+  "chambres": {
+    "titre": "Chambres",
+    "numero": "Numéro",
+    "type": "Type",
+    "etage": "Étage",
+    "statut": "Statut",
+    "tarif": "Tarif / nuit",
+    "statuts": {
+      "libre_propre": "Libre propre",
+      "occupee": "Occupée",
+      "sale": "Sale",
+      "nettoyage": "Nettoyage",
+      "inspection": "Inspection",
+      "hors_service": "Hors service"
+    }
+  },
+  "clients": {
+    "titre": "Clients",
+    "nouveau": "Nouveau client",
+    "prenom": "Prénom",
+    "nom": "Nom",
+    "email": "Email",
+    "telephone": "Téléphone",
+    "nationalite": "Nationalité",
+    "segment": "Segment",
+    "sejours": "Séjours",
+    "fidelite": "Fidélité",
+    "segments": {
+      "standard": "Standard",
+      "vip": "VIP",
+      "corporate": "Corporate",
+      "groupe": "Groupe"
+    }
+  },
+  "menage": {
+    "titre": "Ménage",
+    "kanban": "Kanban Chambres",
+    "taches": "Mes Tâches",
+    "assigner": "Assigner",
+    "demarrer": "Démarrer",
+    "terminer": "Terminer",
+    "valider": "Valider",
+    "statuts": {
+      "ouverte": "Ouverte",
+      "assignee": "Assignée",
+      "en_cours": "En cours",
+      "terminee": "Terminée",
+      "validee": "Validée"
+    }
+  },
+  "maintenance": {
+    "titre": "Maintenance",
+    "nouveau_ticket": "Nouveau ticket",
+    "categorie": "Catégorie",
+    "priorite": "Priorité",
+    "technicien": "Technicien",
+    "statuts": {
+      "ouvert": "Ouvert",
+      "assigne": "Assigné",
+      "en_cours": "En cours",
+      "resolu": "Résolu",
+      "ferme": "Fermé"
+    },
+    "priorites": {
+      "basse": "Basse",
+      "normale": "Normale",
+      "haute": "Haute",
+      "urgente": "Urgente"
+    }
+  },
+  "restaurant": {
+    "titre": "Restaurant",
+    "pos": "Caisse (POS)",
+    "commande": "Commande",
+    "table": "Table",
+    "walk_in": "Walk-in",
+    "chambre": "Chambre",
+    "envoyer_cuisine": "Envoyer en cuisine",
+    "payer": "Encaisser",
+    "total": "Total",
+    "statuts": {
+      "nouvelle": "Nouvelle",
+      "en_preparation": "En préparation",
+      "prete": "Prête",
+      "servie": "Servie"
+    }
+  },
+  "facturation": {
+    "titre": "Facturation",
+    "nouvelle_facture": "Nouvelle facture",
+    "numero": "N° Facture",
+    "date": "Date",
+    "montant_ht": "Montant HT",
+    "taxes": "Taxes",
+    "montant_ttc": "Montant TTC",
+    "statut": "Statut",
+    "telecharger": "Télécharger PDF",
+    "taxes_titre": "Configuration des taxes"
+  },
+  "analytique": {
+    "titre": "Analytique",
+    "aujourd_hui": "Aujourd'hui",
+    "semaine": "Semaine",
+    "mois": "Mois",
+    "annee": "Année",
+    "personnalise": "Personnalisé",
+    "exporter": "Exporter"
+  },
+  "common": {
+    "enregistrer": "Enregistrer",
+    "annuler": "Annuler",
+    "supprimer": "Supprimer",
+    "modifier": "Modifier",
+    "creer": "Créer",
+    "fermer": "Fermer",
+    "confirmer": "Confirmer",
+    "chercher": "Rechercher",
+    "chargement": "Chargement…",
+    "aucun_resultat": "Aucun résultat",
+    "succès": "Succès",
+    "erreur": "Erreur",
+    "avertissement": "Avertissement",
+    "oui": "Oui",
+    "non": "Non",
+    "tout": "Tout",
+    "actions": "Actions",
+    "details": "Détails",
+    "retour": "Retour",
+    "suivant": "Suivant",
+    "precedent": "Précédent",
+    "nouveau": "Nouveau",
+    "liste": "Liste",
+    "grille": "Grille",
+    "filtre": "Filtres",
+    "exporter": "Exporter",
+    "imprimer": "Imprimer",
+    "refresh": "Actualiser",
+    "total": "Total",
+    "par_page": "Par page",
+    "sur": "sur",
+    "de": "de"
+  },
+  "devises": {
+    "XAF": "Franc CFA BEAC",
+    "XOF": "Franc CFA BCEAO",
+    "EUR": "Euro",
+    "USD": "Dollar américain",
+    "GBP": "Livre sterling",
+    "MAD": "Dirham marocain",
+    "NGN": "Naira nigérian",
+    "ZAR": "Rand sud-africain",
+    "CAD": "Dollar canadien",
+    "CHF": "Franc suisse",
+    "JPY": "Yen japonais",
+    "CNY": "Yuan chinois"
+  },
+  "roles": {
+    "super_admin": "Super Administrateur",
+    "manager": "Directeur",
+    "reception": "Réception",
+    "housekeeping": "Housekeeping",
+    "restaurant": "Restaurant",
+    "comptabilite": "Comptabilité",
+    "technicien": "Technicien"
+  },
+  "ia": {
+    "titre": "Ouwalou AI",
+    "placeholder": "Posez une question sur vos opérations…",
+    "analyser": "Analyser",
+    "alertes": "Alertes",
+    "recommandations": "Recommandations",
+    "previsions": "Prévisions"
+  }
+}

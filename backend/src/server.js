@@ -173,7 +173,7 @@ async function demarrer() {
     server.log.info(`💰 Devise par défaut: ${process.env.DEFAULT_CURRENCY || 'XAF'}`)
     server.log.info(`🌍 Fuseau horaire: ${process.env.DEFAULT_TIMEZONE || 'Africa/Douala'}`)
   } catch (err) {
-    server.log.error(err, 'Erreur au démarrage du serveur')
+    console.error("ERREUR DEMARRAGE:", err)
     process.exit(1)
   }
 }

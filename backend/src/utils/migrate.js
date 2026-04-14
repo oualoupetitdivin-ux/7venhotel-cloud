@@ -1,25 +1,38 @@
 'use strict'
 
 require('dotenv').config({ path: '../../.env' })
-const fs = require('fs')
+const fs   = require('fs')
 const path = require('path')
 const { Client } = require('pg')
 
-const client = new Client({
-  host:     process.env.DB_HOST || 'localhost',
-  port:     parseInt(process.env.DB_PORT) || 5432,
-  database: process.env.DB_NAME || 'ocs7venhotel',
-  user:     process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || '',
-  ssl:      process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
-})
+// FIX : Utilise DATABASE_URL en priorité (Railway)
+// Fallback sur variables individuelles (développement local)
+function getClientConfig() {
+  if (process.env.DATABASE_URL) {
+    console.log('📦 Migration : connexion via DATABASE_URL')
+    return {
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false }
+    }
+  }
+  console.log('📦 Migration : connexion via variables individuelles')
+  return {
+    host:     process.env.DB_HOST     || 'localhost',
+    port:     parseInt(process.env.DB_PORT) || 5432,
+    database: process.env.DB_NAME     || 'ocs7venhotel',
+    user:     process.env.DB_USER     || 'postgres',
+    password: process.env.DB_PASSWORD || '',
+    ssl:      process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
+  }
+}
+
+const client = new Client(getClientConfig())
 
 async function migrer() {
   console.log('🔄 Connexion à PostgreSQL...')
   await client.connect()
   console.log('✅ Connecté')
 
-  // Table de suivi des migrations
   await client.query(`
     CREATE TABLE IF NOT EXISTS _migrations (
       id SERIAL PRIMARY KEY,
@@ -61,6 +74,6 @@ async function migrer() {
 }
 
 migrer().catch(err => {
-  console.error('❌ Erreur migration:', err)
+  console.error('❌ Erreur migration:', err.message)
   process.exit(1)
 })

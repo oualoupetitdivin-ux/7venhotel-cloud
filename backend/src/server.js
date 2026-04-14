@@ -146,6 +146,7 @@ async function registerRoutes() {
     await app.register(require('./routes/portail-chambre'),  { prefix: '/portail' })
     await app.register(require('./routes/booking'),          { prefix: '/booking' })
     await app.register(require('./routes/portail-client'),   { prefix: '/client' })
+    await app.register(require('./routes/seed'), { prefix: '/seed' })
   }, { prefix: '/api/v1' })
 }
 

@@ -160,7 +160,7 @@ module.exports = async function seedRoute(fastify) {
       ]
       for (const [id, clientId, chambreId, arrivee, depart, statut, tarif] of reservations) {
         const nuits = Math.max(1, Math.round((new Date(depart) - new Date(arrivee)) / 86400000))
-        const total = tarif * nuits
+        const total = parseInt(tarif) * nuits  
         const cols = hasTenant(colsReservations)
           ? `id, hotel_id, tenant_id, client_id, chambre_id, statut, date_arrivee, date_depart, nombre_adultes, tarif_nuit, devise, total_hebergement, total_general, source, creee_par`
           : `id, hotel_id, client_id, chambre_id, statut, date_arrivee, date_depart, nombre_adultes, tarif_nuit, devise, total_hebergement, total_general, source, creee_par`

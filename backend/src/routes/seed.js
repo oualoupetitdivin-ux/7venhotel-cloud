@@ -161,7 +161,8 @@ module.exports = async function seedRoute(fastify) {
       ]
       for (const [id, clientId, chambreId, arrivee, depart, statut, tarif] of reservations) {
         const nuits = Math.max(1, Math.round((new Date(depart) - new Date(arrivee)) / 86400000))
-        const total = tarif * nuits
+        const tarifNum = Number(tarif)
+        const total = tarifNum * nuits
         if (has(colsReservations, 'tenant_id')) {
           await client.query(`
             INSERT INTO reservations (id, hotel_id, tenant_id, client_id, chambre_id, statut,

@@ -160,17 +160,15 @@ module.exports = async function seedRoute(fastify) {
       ]
       for (const [id, clientId, chambreId, arrivee, depart, statut, tarif] of reservations) {
         const nuits = Math.max(1, Math.round((new Date(depart) - new Date(arrivee)) / 86400000))
-        const total = parseInt(tarif) * nuits  
-        const cols = hasTenant(colsReservations)
-          ? `id, hotel_id, tenant_id, client_id, chambre_id, statut, date_arrivee, date_depart, nombre_adultes, tarif_nuit, devise, total_hebergement, total_general, source, creee_par`
-          : `id, hotel_id, client_id, chambre_id, statut, date_arrivee, date_depart, nombre_adultes, tarif_nuit, devise, total_hebergement, total_general, source, creee_par`
-        const vals = hasTenant(colsReservations)
-          ? `$1,'22222222-2222-2222-2222-222222222222','11111111-1111-1111-1111-111111111111',$2,$3,$4,$5,$6,2,$7,'XAF',$8,$8,'direct','44444444-4444-4444-4444-444444444444'`
-          : `$1,'22222222-2222-2222-2222-222222222222',$2,$3,$4,$5,$6,2,$7,'XAF',$8,$8,'direct','44444444-4444-4444-4444-444444444444'`
-        await client.query(
-          `INSERT INTO reservations (${cols}) VALUES (${vals}) ON CONFLICT (id) DO NOTHING`,
-          [id, clientId, chambreId, statut, arrivee, depart, tarif, total]
-        )
+        const total = tarif * nuits
+        await client.query(`
+          INSERT INTO reservations (id, hotel_id, tenant_id, client_id, chambre_id, statut,
+            date_arrivee, date_depart, nombre_adultes, tarif_nuit, devise,
+            total_hebergement, total_general, source, creee_par)
+          VALUES ($1,'22222222-2222-2222-2222-222222222222','11111111-1111-1111-1111-111111111111',
+            $2,$3,$4,$5,$6,2,$7::numeric,'XAF',$8::numeric,$8::numeric,'direct','44444444-4444-4444-4444-444444444444')
+          ON CONFLICT (id) DO NOTHING
+        `, [id, clientId, chambreId, statut, arrivee, depart, tarif, total])
       }
       logs.push('✅ 9 réservations créées')
 

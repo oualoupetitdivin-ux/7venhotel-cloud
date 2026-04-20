@@ -46,7 +46,7 @@ module.exports = async function authRoutes(fastify) {
 
     const hotel = user.hotel_id ? await fastify.db('hotels')
       .where({ id: user.hotel_id })
-      .select('id', 'nom', 'devise_defaut')
+      .select('id', 'nom')
       .first() : null
 
     const paramsHotel = user.hotel_id ? await fastify.db('parametres_hotel')
@@ -70,7 +70,7 @@ module.exports = async function authRoutes(fastify) {
       hotel: hotel ? {
         id:            hotel.id,
         nom:           hotel.nom,
-        devise:        paramsHotel?.devise || hotel.devise_defaut || 'XAF',
+        devise:        paramsHotel?.devise || 'XAF',
         fuseau_horaire:paramsHotel?.fuseau_horaire || 'Africa/Douala',
         langue:        paramsHotel?.langue || 'fr'
       } : null

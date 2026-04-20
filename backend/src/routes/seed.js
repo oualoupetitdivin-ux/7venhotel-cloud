@@ -275,7 +275,7 @@ module.exports = async function seedRoute(fastify) {
           : `'22222222-2222-2222-2222-222222222222',$1,$2,$3,21,$4,$5,$6,$7,$8`
         await client.query(
           `INSERT INTO analytics_quotidiennes (${aCols}) VALUES (${aVals})
-           ON CONFLICT (hotel_id, date) DO UPDATE SET taux_occupation=$2, revenu_total=$6`,
+           ON CONFLICT (hotel_id, date) DO UPDATE SET taux_occupation=EXCLUDED.taux_occupation, revenu_total=EXCLUDED.revenu_total`,
           [dt, occ, Math.floor(occ/100*21), rev, Math.floor(rev*0.15), Math.floor(rev*1.15),
            Math.floor(Math.random()*5)+1, Math.floor(Math.random()*5)+1]
         )

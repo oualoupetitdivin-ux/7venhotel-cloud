@@ -45,12 +45,12 @@ module.exports = async function seedRoute(fastify) {
 
       // ── TYPES DE CHAMBRE ──────────────────────────────────────────
       const typesChambre = [
-        ['tc-std-001', 'Standard', 'Chambre confortable avec vue sur jardin', 2, 45000, 1],
-        ['tc-sup-001', 'Supérieure', 'Chambre spacieuse avec vue partielle ville', 2, 65000, 2],
-        ['tc-del-001', 'Deluxe', 'Chambre luxueuse avec balcon et vue ville', 2, 85000, 2],
-        ['tc-jun-001', 'Junior Suite', 'Suite avec salon séparé', 3, 120000, 3],
-        ['tc-exe-001', 'Suite Exécutive', 'Suite prestige avec jacuzzi et terrasse', 2, 200000, 4],
-        ['tc-pre-001', 'Suite Présidentielle', 'Suite royale avec butler service', 4, 400000, 5],
+        ['a0000001-0000-0000-0000-000000000001', 'Standard', 'Chambre confortable avec vue sur jardin', 2, 45000],
+        ['a0000001-0000-0000-0000-000000000002', 'Supérieure', 'Chambre spacieuse avec vue partielle ville', 2, 65000],
+        ['a0000001-0000-0000-0000-000000000003', 'Deluxe', 'Chambre luxueuse avec balcon et vue ville', 2, 85000],
+        ['a0000001-0000-0000-0000-000000000004', 'Junior Suite', 'Suite avec salon séparé', 3, 120000],
+        ['a0000001-0000-0000-0000-000000000005', 'Suite Exécutive', 'Suite prestige avec jacuzzi et terrasse', 2, 200000],
+        ['a0000001-0000-0000-0000-000000000006', 'Suite Présidentielle', 'Suite royale avec butler service', 4, 400000],
       ]
       for (const [id, nom, desc, capacite, tarif, etoiles] of typesChambre) {
         await client.query(`

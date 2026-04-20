@@ -33,10 +33,18 @@ module.exports = async function reservationsRoutes(fastify) {
     if (date_fin)    query = query.where('r.date_arrivee', '<=', date_fin)
 
     const offset = (parseInt(page) - 1) * parseInt(limite)
-    const [data, [{ total }]] = await Promise.all([
-      query.clone().limit(parseInt(limite)).offset(offset),
-      query.clone().count('r.id AS total')
-    ])
+   const countQuery = fastify.db('reservations AS r')
+  .where('r.hotel_id', request.hotelId)
+
+if (statut)     countQuery.where('r.statut', statut)
+if (chambre_id) countQuery.where('r.chambre_id', chambre_id)
+if (date_debut) countQuery.where('r.date_depart', '>=', date_debut)
+if (date_fin)   countQuery.where('r.date_arrivee', '<=', date_fin)
+
+const [data, [{ total }]] = await Promise.all([
+  query.clone().limit(parseInt(limite)).offset(offset),
+  countQuery.count('r.id AS total')
+])
 
     const result = { data, pagination: { page: parseInt(page), limite: parseInt(limite), total: parseInt(total) } }
     await fastify.cache.set(cacheKey, result, 30)

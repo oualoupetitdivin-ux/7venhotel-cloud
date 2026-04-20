@@ -121,27 +121,22 @@ module.exports = async function seedRoute(fastify) {
       // ── CLIENTS ───────────────────────────────────────────────────
       const clients = [
         ['c0000001-0000-0000-0000-000000000001','Jean-Baptiste','Nkomo',    'jb.nkomo@email.com',      '+237 699 001 001','Cameroun','VIP'],
-        ['c0000001-0000-0000-0000-000000000002','Amina',        'Diallo',   'amina.diallo@email.com',  '+221 77 002 002', 'Sénégal', 'regular'],
-        ['c0000001-0000-0000-0000-000000000003','Marc',         'Dupont',   'marc.dupont@email.com',   '+33 6 03 03 03 03','France', 'regular'],
+        ['c0000001-0000-0000-0000-000000000002','Amina',        'Diallo',   'amina.diallo@email.com',  '+221 77 002 002', 'Sénégal', 'standard'],
+        ['c0000001-0000-0000-0000-000000000003','Marc',         'Dupont',   'marc.dupont@email.com',   '+33 6 03 03 03 03','France', 'standard'],
         ['c0000001-0000-0000-0000-000000000004','Fatima',       'Al-Rashid','f.alrashid@email.com',    '+971 50 004 004', 'Émirats','VIP'],
-        ['c0000001-0000-0000-0000-000000000005','Emmanuel',     'Eto',      'emmanuel.eto@email.com',  '+237 677 005 005','Cameroun','regular'],
-        ['c0000001-0000-0000-0000-000000000006','Sarah',        'Johnson',  'sarah.j@email.com',       '+1 555 006 006',  'USA',    'regular'],
-        ['c0000001-0000-0000-0000-000000000007','Kwame',        'Asante',   'kwame.asante@email.com',  '+233 20 007 007', 'Ghana',  'regular'],
+        ['c0000001-0000-0000-0000-000000000005','Emmanuel',     'Eto',      'emmanuel.eto@email.com',  '+237 677 005 005','Cameroun','standard'],
+        ['c0000001-0000-0000-0000-000000000006','Sarah',        'Johnson',  'sarah.j@email.com',       '+1 555 006 006',  'USA',    'standard'],
+        ['c0000001-0000-0000-0000-000000000007','Kwame',        'Asante',   'kwame.asante@email.com',  '+233 20 007 007', 'Ghana',  'standard'],
         ['c0000001-0000-0000-0000-000000000008','Isabelle',     'Fontaine', 'i.fontaine@email.com',    '+33 7 08 08 08 08','France','VIP'],
-        ['c0000001-0000-0000-0000-000000000009','Mohammed',     'Benali',   'm.benali@email.com',      '+212 6 09 09 09 09','Maroc','regular'],
-        ['c0000001-0000-0000-0000-000000000010','Grace',        'Okonkwo',  'grace.ok@email.com',      '+234 80 010 010 10','Nigeria','regular'],
+        ['c0000001-0000-0000-0000-000000000009','Mohammed',     'Benali',   'm.benali@email.com',      '+212 6 09 09 09 09','Maroc','standard'],
+        ['c0000001-0000-0000-0000-000000000010','Grace',        'Okonkwo',  'grace.ok@email.com',      '+234 80 010 010 10','Nigeria','standard'],
       ]
       for (const [id, prenom, nom, email, tel, pays, segment] of clients) {
-        const cols = hasTenant(colsClients)
-          ? `id, hotel_id, tenant_id, prenom, nom, email, telephone, pays, segment, actif`
-          : `id, hotel_id, prenom, nom, email, telephone, pays, segment, actif`
-        const vals = hasTenant(colsClients)
-          ? `$1,'22222222-2222-2222-2222-222222222222','11111111-1111-1111-1111-111111111111',$2,$3,$4,$5,$6,$7,true`
-          : `$1,'22222222-2222-2222-2222-222222222222',$2,$3,$4,$5,$6,$7,true`
-        await client.query(
-          `INSERT INTO clients (${cols}) VALUES (${vals}) ON CONFLICT (id) DO NOTHING`,
-          [id, prenom, nom, email, tel, pays, segment]
-        )
+        await client.query(`
+          INSERT INTO clients (id, hotel_id, tenant_id, prenom, nom, email, telephone, pays_residence, segment, actif)
+          VALUES ($1,'22222222-2222-2222-2222-222222222222','11111111-1111-1111-1111-111111111111',$2,$3,$4,$5,$6,$7,true)
+          ON CONFLICT (id) DO NOTHING
+        `, [id, prenom, nom, email, tel, pays, segment])
       }
       logs.push('✅ 10 clients créés')
 

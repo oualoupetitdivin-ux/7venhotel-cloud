@@ -54,10 +54,10 @@ module.exports = async function seedRoute(fastify) {
       ]
       for (const [id, nom, desc, capacite, tarif, etoiles] of typesChambre) {
         await client.query(`
-  INSERT INTO types_chambre (id, hotel_id, nom, description, capacite_adultes, tarif_base, nombre_etoiles)
-  VALUES ($1,'22222222-2222-2222-2222-222222222222',$2,$3,$4,$5,$6)
+  INSERT INTO types_chambre (id, hotel_id, nom, description, capacite_adultes, tarif_base)
+  VALUES ($1,'22222222-2222-2222-2222-222222222222',$2,$3,$4,$5)
   ON CONFLICT (id) DO NOTHING
-`, [id, nom, desc, capacite, tarif, etoiles])
+`, [id, nom, desc, capacite, tarif])
       }
       logs.push('✅ 6 types de chambre créés')
 

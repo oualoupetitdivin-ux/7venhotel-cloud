@@ -135,7 +135,7 @@ module.exports = async function seedRoute(fastify) {
       for (const [id, prenom, nom, email, tel, pays, segment] of clients) {
         await client.query(`
           INSERT INTO clients (id, hotel_id, tenant_id, prenom, nom, email, telephone, pays_residence, segment, actif)
-          VALUES ($1,'22222222-2222-2222-2222-222222222222','11111111-1111-1111-1111-111111111111',$2,$3,$4,$5,$6,$7,true)
+          VALUES ($1,'22222222-2222-2222-2222-222222222222','11111111-1111-1111-1111-111111111111',$2,$3,$4,$5,$6,2,$7::text,'XAF',$8::text,$8::text,true)
           ON CONFLICT (id) DO NOTHING
         `, [id, prenom, nom, email, tel, pays, segment])
       }

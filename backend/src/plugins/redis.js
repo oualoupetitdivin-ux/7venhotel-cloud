@@ -20,31 +20,22 @@ async function redisPlugin(fastify) {
   const redisUrl  = process.env.REDIS_URL
   const redisHost = process.env.REDIS_HOST
 
-  // ── Cache en mémoire (fallback si Redis absent) ───────────────────
-  const memoryCache = new Map()
+  // ── Cache no-op (fallback si Redis absent ou en échec) ────────────
+const cacheNoOp = {
+  async get(key)               { return null  },
+  async set(key, value, ttl)   { return true  },
+  async del(key)               { return true  },
+  async delPattern(pattern)    { return 0     },
+  async exists(key)            { return false }
+}
 
-  const cacheMemoire = {
-    async get(key) {
-      const entry = memoryCache.get(key)
-      if (!entry) return null
-      if (entry.expireAt && Date.now() > entry.expireAt) { memoryCache.delete(key); return null }
-      try { return JSON.parse(entry.value) } catch { return null }
-    },
-    async set(key, value, ttlSeconds = 300) {
-      memoryCache.set(key, { value: JSON.stringify(value), expireAt: Date.now() + ttlSeconds * 1000 })
-      return true
-    },
-    async del(key)          { memoryCache.delete(key); return true },
-    async delPattern(pattern) {
-      const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$')
-      let count = 0
-      for (const key of memoryCache.keys()) {
-        if (regex.test(key)) { memoryCache.delete(key); count++ }
-      }
-      return count
-    },
-    async exists(key) { return memoryCache.has(key) }
-  }
+// ── Pas de Redis configuré → mode no-op ──────────────────────────
+if (!redisUrl && !redisHost) {
+  fastify.log.warn('⚠️ Redis non configuré — cache désactivé (mode no-op)')
+  fastify.decorate('redis', null)
+  fastify.decorate('cache', cacheNoOp)
+  return
+}
 
   // ── Pas de Redis configuré → mode mémoire ────────────────────────
   if (!redisUrl && !redisHost) {

@@ -150,7 +150,7 @@ async function registerRoutes() {
     if (process.env.ENABLE_SEED_ROUTE === 'true') {
       await app.register(require('./routes/seed'), { prefix: '/seed' })
     }
-}
+}, { prefix: '/api/v1' }) 
 
 // ── Gestionnaire d'erreurs global ─────────────────────────────────────
 server.setErrorHandler(async (error, request, reply) => {

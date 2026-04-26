@@ -129,28 +129,29 @@ async function registerRoutes() {
 
   // API Routes v1
   await server.register(async function(app) {
-    await app.register(require('./routes/auth'),             { prefix: '/auth' })
-    await app.register(require('./routes/tenants'),          { prefix: '/tenants' })
-    await app.register(require('./routes/hotels'),           { prefix: '/hotels' })
-    await app.register(require('./routes/utilisateurs'),     { prefix: '/utilisateurs' })
-    await app.register(require('./routes/chambres'),         { prefix: '/chambres' })
-    await app.register(require('./routes/clients'),          { prefix: '/clients' })
-    await app.register(require('./routes/reservations'),     { prefix: '/reservations' })
-    await app.register(require('./routes/menage'),           { prefix: '/menage' })
-    await app.register(require('./routes/maintenance'),      { prefix: '/maintenance' })
-    await app.register(require('./routes/restaurant'),       { prefix: '/restaurant' })
-    await app.register(require('./routes/facturation'),      { prefix: '/facturation' })
-    await app.register(require('./routes/analytics'),        { prefix: '/analytics' })
-    await app.register(require('./routes/ai'),               { prefix: '/ai' })
-    await app.register(require('./routes/uploads'),          { prefix: '/uploads' })
-    await app.register(require('./routes/portail-chambre'),  { prefix: '/portail' })
-    await app.register(require('./routes/booking'),          { prefix: '/booking' })
-    await app.register(require('./routes/portail-client'), { prefix: '/client' })
-    
-    if (process.env.ENABLE_SEED_ROUTE === 'true') {
-      await app.register(require('./routes/seed'), { prefix: '/seed' })
-    }
-}, { prefix: '/api/v1' }) 
+  await app.register(require('./routes/auth'),             { prefix: '/auth' })
+  await app.register(require('./routes/tenants'),          { prefix: '/tenants' })
+  await app.register(require('./routes/hotels'),           { prefix: '/hotels' })
+  await app.register(require('./routes/utilisateurs'),     { prefix: '/utilisateurs' })
+  await app.register(require('./routes/chambres'),         { prefix: '/chambres' })
+  await app.register(require('./routes/clients'),          { prefix: '/clients' })
+  await app.register(require('./routes/reservations'),     { prefix: '/reservations' })
+  await app.register(require('./routes/menage'),           { prefix: '/menage' })
+  await app.register(require('./routes/maintenance'),      { prefix: '/maintenance' })
+  await app.register(require('./routes/restaurant'),       { prefix: '/restaurant' })
+  await app.register(require('./routes/facturation'),      { prefix: '/facturation' })
+  await app.register(require('./routes/analytics'),        { prefix: '/analytics' })
+  await app.register(require('./routes/ai'),               { prefix: '/ai' })
+  await app.register(require('./routes/uploads'),          { prefix: '/uploads' })
+  await app.register(require('./routes/portail-chambre'),  { prefix: '/portail' })
+  await app.register(require('./routes/booking'),          { prefix: '/booking' })
+  await app.register(require('./routes/portail-client'),   { prefix: '/client' })
+
+  if (process.env.ENABLE_SEED_ROUTE === 'true') {
+    await app.register(require('./routes/seed'), { prefix: '/seed' })
+  }
+
+}, { prefix: '/api/v1' })
 
 // ── Gestionnaire d'erreurs global ─────────────────────────────────────
 server.setErrorHandler(async (error, request, reply) => {

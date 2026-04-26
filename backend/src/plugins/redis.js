@@ -41,7 +41,7 @@ if (!redisUrl && !redisHost) {
   if (!redisUrl && !redisHost) {
     fastify.log.warn('⚠️  Redis non configuré — cache en mémoire activé (non persistant)')
     fastify.decorate('redis', null)
-    fastify.decorate('cache', cacheMemoire)
+    fastify.decorate('cache', cacheNoOp)
     return
   }
 

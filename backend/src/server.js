@@ -145,9 +145,11 @@ async function registerRoutes() {
     await app.register(require('./routes/uploads'),          { prefix: '/uploads' })
     await app.register(require('./routes/portail-chambre'),  { prefix: '/portail' })
     await app.register(require('./routes/booking'),          { prefix: '/booking' })
-    await app.register(require('./routes/portail-client'),   { prefix: '/client' })
-    await app.register(require('./routes/seed'), { prefix: '/seed' })
-  }, { prefix: '/api/v1' })
+    await app.register(require('./routes/portail-client'), { prefix: '/client' })
+    
+    if (process.env.ENABLE_SEED_ROUTE === 'true') {
+      await app.register(require('./routes/seed'), { prefix: '/seed' })
+    }
 }
 
 // ── Gestionnaire d'erreurs global ─────────────────────────────────────

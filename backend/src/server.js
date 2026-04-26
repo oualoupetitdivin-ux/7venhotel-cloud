@@ -153,6 +153,8 @@ async function registerRoutes() {
 
 }, { prefix: '/api/v1' })
 
+}
+
 // ── Gestionnaire d'erreurs global ─────────────────────────────────────
 server.setErrorHandler(async (error, request, reply) => {
   server.log.error({ err: error, url: request.url, method: request.method }, 'Erreur API')

@@ -1,5 +1,7 @@
 'use strict'
 
+console.log("🔥 SERVER VERSION TEST OK");
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CORRECTION #1 — dotenv avec chemin absolu ancré sur __dirname
 //

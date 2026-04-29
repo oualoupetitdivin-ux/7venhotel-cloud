@@ -62,7 +62,7 @@ function resoudreConnexion(log) {
         connectionString: process.env.DATABASE_PRIVATE_URL,
         // Réseau privé Railway : SSL désactivé par défaut (réseau interne)
         // Forçable via DB_SSL=true si l'environnement l'exige
-        ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
+        ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false }
       }
     }
   }
@@ -184,10 +184,11 @@ async function databasePlugin(fastify) {
     await Promise.race([
       knex.raw('SELECT 1'),
       new Promise((_, rej) =>
-        setTimeout(() => rej(new Error('Timeout DB (3000ms)')), 3000)
+        setTimeout(() => rej(new Error('Timeout DB (2500ms)')), 2500)
       )
     ])
     fastify.log.info({ mode, ssl: !!connection.ssl }, '✅ PostgreSQL connecté')
+    fastify.log.info(`🧠 DB Mode Résolu : ${mode}`)
   } catch (err) {
     fastify.log.error(
       { mode, erreur: err.message },

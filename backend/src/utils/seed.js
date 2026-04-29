@@ -315,13 +315,8 @@ async function seeder(knexInstance) {
       log(`Tenant : ${resume.tenant ? 'inséré' : 'déjà présent'}`)
 
       // ── 4. Abonnement ───────────────────────────────────────────────────────
-      // BUG 1 CORRIGÉ — date_debut : new Date() envoyait un timestamp complet
-      // PostgreSQL type DATE attend 'YYYY-MM-DD' — toISOString().split('T')[0] produit ce format
-      //
-      // BUG 2 CORRIGÉ — onConflict('tenant_id') invalide :
-      // tenant_id n'a pas de contrainte UNIQUE dans le schéma →
-      // ON CONFLICT (tenant_id) rejeté par PostgreSQL → rollback toute la transaction
-      // Solution : select + insert conditionnel (pattern correct sans UNIQUE)
+      // FIX 1 — date_debut : DATE PostgreSQL attend 'YYYY-MM-DD', pas un objet Date JS
+      // FIX 2 — onConflict('tenant_id') invalide : pas de UNIQUE(tenant_id) dans le schéma
       const abonnExistant = await trx('abonnements')
         .where({ tenant_id: TENANT_ID })
         .first()
@@ -341,8 +336,8 @@ async function seeder(knexInstance) {
           .returning('tenant_id')
       }
 
-      resume.abonnement = !!abonnInsere
-      log(`Abonnement : ${resume.abonnement ? 'inséré' : 'déjà présent'}`)
+      resume.abonnement = !!abonnInsere || !!abonnExistant
+      log(`Abonnement : ${abonnInsere ? 'inséré' : 'déjà présent'}`)
 
       // ── 5. Hôtel démo ───────────────────────────────────────────────────────
       const [hotelInsere] = await trx('hotels')
@@ -384,14 +379,15 @@ async function seeder(knexInstance) {
       // ── 6. Utilisateurs ─────────────────────────────────────────────────────
       const utilisateurs = [
         {
-          id:                 ADMIN_ID,
-          tenant_id:          TENANT_ID,
-          hotel_id:           HOTEL_ID,
-          email:              'superadmin@demo.com',
-          mot_de_passe_hash:  adminHash,
-          prenom:             'Super',
-          nom:                'Admin',
-          role:               'super_admin',
+          // id omis — uuid_generate_v4() garantit l'unicité
+          // Idempotence gérée par (tenant_id, email) ci-dessous
+          tenant_id:         TENANT_ID,
+          hotel_id:          HOTEL_ID,
+          email:             'superadmin@demo.com',
+          mot_de_passe_hash: adminHash,
+          prenom:            'Super',
+          nom:               'Admin',
+          role:              'super_admin',
         },
         {
           tenant_id:         TENANT_ID,
@@ -440,17 +436,34 @@ async function seeder(knexInstance) {
         },
       ]
 
-      // ON CONFLICT sur email — idempotent
-      // Si l'utilisateur existe avec un hash placeholder, on met à jour le hash
+      // FIX 3 — onConflict('email') invalide : contrainte réelle = UNIQUE(tenant_id, email)
+      // FIX 4 — id fixe (ADMIN_ID) supprimé : PRIMARY KEY violation si déjà présent
+      // Solution : select + insert conditionnel sur (tenant_id, email)
+      let utilisateursInseres  = 0
+      let utilisateursMisAJour = 0
+
       for (const u of utilisateurs) {
-        await trx('utilisateurs')
-          .insert(u)
-          .onConflict('email')
-          .merge(['mot_de_passe_hash'])  // Met à jour le hash si c'était un placeholder
+        const existant = await trx('utilisateurs')
+          .where({ tenant_id: u.tenant_id, email: u.email })
+          .first()
+
+        if (!existant) {
+          await trx('utilisateurs').insert(u)
+          utilisateursInseres++
+        } else if (
+          existant.mot_de_passe_hash.startsWith('$2b$12$placeholder') ||
+          existant.mot_de_passe_hash.startsWith('$2a$12$placeholder') ||
+          existant.mot_de_passe_hash === '$2b$12$placeholder'
+        ) {
+          await trx('utilisateurs')
+            .where({ tenant_id: u.tenant_id, email: u.email })
+            .update({ mot_de_passe_hash: u.mot_de_passe_hash })
+          utilisateursMisAJour++
+        }
       }
 
-      resume.utilisateurs = utilisateurs.length
-      log(`Utilisateurs : ${utilisateurs.length} traités (insérés ou hash mis à jour)`)
+      resume.utilisateurs = utilisateursInseres + utilisateursMisAJour
+      log(`Utilisateurs : ${utilisateursInseres} insérés, ${utilisateursMisAJour} mis à jour`)
 
       // ── 7. Types de chambre ─────────────────────────────────────────────────
       const typesChambre = [

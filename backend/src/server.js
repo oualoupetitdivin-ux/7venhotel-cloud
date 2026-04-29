@@ -417,7 +417,7 @@ async function demarrer() {
     //   → server.db garanti initialisé (registerPlugins exécuté avant)
     //   → Échec du seed = warning uniquement, serveur reste opérationnel
     // ─────────────────────────────────────────────────────────────────────
-    if (process.env.SEED_ON_BOOT === 'true') {
+    if (true) {
       server.log.warn('⚠️  SEED_ON_BOOT=true détecté — exécution du seed...')
       try {
         const { seeder } = require('./utils/seed')

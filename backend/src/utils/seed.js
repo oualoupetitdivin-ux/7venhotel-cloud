@@ -315,19 +315,31 @@ async function seeder(knexInstance) {
       log(`Tenant : ${resume.tenant ? 'inséré' : 'déjà présent'}`)
 
       // ── 4. Abonnement ───────────────────────────────────────────────────────
-      const [abonnInsere] = await trx('abonnements')
-        .insert({
-          tenant_id:         TENANT_ID,
-          plan:              'enterprise',
-          statut:            'actif',
-          date_debut:        new Date(),
-          max_hotels:        5,
-          max_chambres:      500,
-          max_utilisateurs:  50,
-        })
-        .onConflict('tenant_id')
-        .ignore()
-        .returning('tenant_id')
+      // BUG 1 CORRIGÉ — date_debut : new Date() envoyait un timestamp complet
+      // PostgreSQL type DATE attend 'YYYY-MM-DD' — toISOString().split('T')[0] produit ce format
+      //
+      // BUG 2 CORRIGÉ — onConflict('tenant_id') invalide :
+      // tenant_id n'a pas de contrainte UNIQUE dans le schéma →
+      // ON CONFLICT (tenant_id) rejeté par PostgreSQL → rollback toute la transaction
+      // Solution : select + insert conditionnel (pattern correct sans UNIQUE)
+      const abonnExistant = await trx('abonnements')
+        .where({ tenant_id: TENANT_ID })
+        .first()
+
+      let abonnInsere = null
+      if (!abonnExistant) {
+        ;[abonnInsere] = await trx('abonnements')
+          .insert({
+            tenant_id:        TENANT_ID,
+            plan:             'enterprise',
+            statut:           'actif',
+            date_debut:       new Date().toISOString().split('T')[0],
+            max_hotels:       5,
+            max_chambres:     500,
+            max_utilisateurs: 50,
+          })
+          .returning('tenant_id')
+      }
 
       resume.abonnement = !!abonnInsere
       log(`Abonnement : ${resume.abonnement ? 'inséré' : 'déjà présent'}`)

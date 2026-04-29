@@ -398,6 +398,34 @@ async function demarrer() {
     await registerPlugins()
     await registerRoutes()
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Seed au démarrage — activé uniquement si SEED_ON_BOOT=true
+    //
+    // Procédure Railway pour initialiser une base vide :
+    //   1. Railway → Variables : SEED_ON_BOOT=true
+    //                            SEED_ADMIN_PASSWORD=<motdepasse_fort>
+    //                            SEED_DEMO_PASSWORD=<motdepasse_demo>
+    //   2. Redéployer → vérifier logs "[seed] ✅ Seed terminé"
+    //   3. Railway → Variables : supprimer SEED_ON_BOOT
+    //   4. Redéployer → bloc ignoré définitivement
+    //
+    // Garanties :
+    //   → Aucune route HTTP exposée
+    //   → Idempotent — sortie immédiate si données déjà présentes
+    //   → server.db garanti initialisé (registerPlugins exécuté avant)
+    //   → Échec du seed = warning uniquement, serveur reste opérationnel
+    // ─────────────────────────────────────────────────────────────────────
+    if (process.env.SEED_ON_BOOT === 'true') {
+      server.log.warn('⚠️  SEED_ON_BOOT=true détecté — exécution du seed...')
+      try {
+        const { seeder } = require('./utils/seed')
+        const resume = await seeder(server.db)
+        server.log.info({ resume }, '✅ Seed terminé — supprimez SEED_ON_BOOT de Railway puis redéployez')
+      } catch (seedErr) {
+        server.log.error({ err: seedErr.message }, '❌ Seed échoué — vérifiez SEED_ADMIN_PASSWORD et SEED_DEMO_PASSWORD')
+      }
+    }
+
     const port = parseInt(process.env.PORT) || 3001
     const host = '0.0.0.0'
 

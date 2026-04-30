@@ -337,49 +337,38 @@ async function registerRoutes() {
   })
 
   // ── API Routes v1 ─────────────────────────────────────────────────
-  await server.register(async function(app) {
-    await app.register(require('./routes/auth'),            { prefix: '/auth' })
-    await app.register(require('./routes/tenants'),         { prefix: '/tenants' })
-    await app.register(require('./routes/hotels'),          { prefix: '/hotels' })
-    await app.register(require('./routes/utilisateurs'),    { prefix: '/utilisateurs' })
-    await app.register(require('./routes/chambres'),        { prefix: '/chambres' })
-    await app.register(require('./routes/clients'),         { prefix: '/clients' })
-    await app.register(require('./routes/reservations'),    { prefix: '/reservations' })
-    await app.register(require('./routes/menage'),          { prefix: '/menage' })
-    await app.register(require('./routes/maintenance'),     { prefix: '/maintenance' })
-    await app.register(require('./routes/restaurant'),      { prefix: '/restaurant' })
-    await app.register(require('./routes/facturation'),     { prefix: '/facturation' })
-    await app.register(require('./routes/analytics'),       { prefix: '/analytics' })
-    await app.register(require('./routes/ai'),              { prefix: '/ai' })
-    await app.register(require('./routes/uploads'),         { prefix: '/uploads' })
-    await app.register(require('./routes/portail-chambre'), { prefix: '/portail' })
-    await app.register(require('./routes/booking'),         { prefix: '/booking' })
-    await app.register(require('./routes/portail-client'),  { prefix: '/client' })
+await server.register(async function(app) {
+  await app.register(require('./routes/auth'),         { prefix: '/auth' })
+  await app.register(require('./routes/tenants'),      { prefix: '/tenants' })
+  await app.register(require('./routes/hotels'),       { prefix: '/hotels' })
+  await app.register(require('./routes/utilisateurs'), { prefix: '/utilisateurs' })
+  await app.register(require('./routes/chambres'),     { prefix: '/chambres' })
+  await app.register(require('./routes/clients'),      { prefix: '/clients' })
 
-    // ─────────────────────────────────────────────────────────────────
-    // CORRECTION #5 — Route /seed désactivée en production
-    //
-    // AVANT : enregistrée inconditionnellement
-    //   → En production, exposait la structure de la BDD, permettait de créer
-    //     ou modifier des utilisateurs, et contenait des credentials hardcodés.
-    //   → C'est une backdoor fonctionnelle sur un système en production.
-    //
-    // APRÈS : enregistrée uniquement si NODE_ENV !== 'production'
-    //   → En production  : route inexistante → HTTP 404 → aucune information divulguée
-    //   → En local/staging : disponible pour les workflows de démo et d'initialisation
-    //   → Un warning log rappelle son activation pour éviter les oublis
-    //
-    // Pour initialiser les données en production : utiliser Railway "Run Command"
-    //   → node backend/src/utils/seed.js
-    //   → Traçable, contrôlé, non exposé via HTTP
-    // ─────────────────────────────────────────────────────────────────
-    if (process.env.NODE_ENV !== 'production') {
-      await app.register(require('./routes/seed'), { prefix: '/seed' })
-      server.log.warn('⚠️  Route /seed ACTIVE — Désactiver avant tout déploiement production (NODE_ENV=production)')
-    }
+  await app.register(require('./routes/reservations.route'), { prefix: '/reservations' })
 
-  }, { prefix: '/api/v1' })
-}
+  await app.register(require('./routes/menage'),      { prefix: '/menage' })
+  await app.register(require('./routes/maintenance'), { prefix: '/maintenance' })
+  await app.register(require('./routes/restaurant'),  { prefix: '/restaurant' })
+  await app.register(require('./routes/facturation'), { prefix: '/facturation' })
+  await app.register(require('./routes/analytics'),   { prefix: '/analytics' })
+  await app.register(require('./routes/ai'),          { prefix: '/ai' })
+  await app.register(require('./routes/uploads'),     { prefix: '/uploads' })
+
+  // ✅ NOUVEAU PORTAIL (remplace portail-chambre + portail-client)
+  await app.register(require('./routes/portail.route'), { prefix: '/portail' })
+
+  await app.register(require('./routes/booking'), { prefix: '/booking' })
+
+  // ─────────────────────────────────────────────────────────────────
+  // Route /seed désactivée en production
+  // ─────────────────────────────────────────────────────────────────
+  if (process.env.NODE_ENV !== 'production') {
+    await app.register(require('./routes/seed'), { prefix: '/seed' })
+    server.log.warn('⚠️  Route /seed ACTIVE — Désactiver avant tout déploiement production (NODE_ENV=production)')
+  }
+
+}, { prefix: '/api/v1' })
 
 // ── Gestionnaire d'erreurs global ─────────────────────────────────────
 server.setErrorHandler(async (error, request, reply) => {

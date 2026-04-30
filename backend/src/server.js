@@ -369,6 +369,7 @@ await server.register(async function(app) {
   }
 
 }, { prefix: '/api/v1' })
+}
 
 // ── Gestionnaire d'erreurs global ─────────────────────────────────────
 server.setErrorHandler(async (error, request, reply) => {

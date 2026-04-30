@@ -1,7 +1,5 @@
 'use strict'
 
-console.log("🔥 SERVER VERSION TEST OK");
-
 // ─────────────────────────────────────────────────────────────────────────────
 // CORRECTION #1 — dotenv avec chemin absolu ancré sur __dirname
 //
@@ -110,6 +108,24 @@ const server = Fastify({
     transport: process.env.NODE_ENV !== 'production'
       ? { target: 'pino-pretty', options: { colorize: true, translateTime: 'SYS:standard' } }
       : undefined,
+    // Serializer personnalisé : masque le token QR portail dans tous les logs.
+    // Pino log req.url — sans cette règle, /portail/abc123... apparaît en clair
+    // dans Railway Logs, Datadog, et tout système de monitoring tiers.
+    serializers: {
+      req(req) {
+        let url = req.url || ''
+        // Remplace /portail/{token} par /portail/[REDACTED] — ne touche pas au routing
+        if (url.startsWith('/portail/')) {
+            url = '/portail/[REDACTED]'
+          }
+        return {
+          method:        req.method,
+          url,
+          hostname:      req.hostname,
+          remoteAddress: req.ip,
+        }
+      }
+    },
   },
   trustProxy: true,
   bodyLimit: 10 * 1024 * 1024, // 10 MB
@@ -417,7 +433,7 @@ async function demarrer() {
     //   → server.db garanti initialisé (registerPlugins exécuté avant)
     //   → Échec du seed = warning uniquement, serveur reste opérationnel
     // ─────────────────────────────────────────────────────────────────────
-    if (true) {
+    if (process.env.SEED_ON_BOOT === 'true') {
       server.log.warn('⚠️  SEED_ON_BOOT=true détecté — exécution du seed...')
       try {
         const { seeder } = require('./utils/seed')

@@ -26,12 +26,38 @@ function createFacturationRepository(db) {
         .whereIn('f.statut', ['ouvert', 'en_attente'])
         .select(
           'f.id', 'f.hotel_id', 'f.reservation_id', 'f.client_id',
-          'f.statut', 'f.devise', 'f.numero_folio',
+          'f.statut', 'f.devise', 'f.numero_folio', 'f.folio_parent_id',
           'f.ouvert_le', 'f.cloture_le', 'f.notes',
           db.raw("c.prenom || ' ' || c.nom AS nom_client"),
           'c.email AS email_client'
         )
         .first() ?? null
+    },
+
+    // PATCH 1+4 — Résolution du folio cible pour un paiement (groupe entreprise)
+    // Si folio_parent_id != NULL → le paiement doit cibler le folio MASTER.
+    // hotel_id vérifié sur le parent — isolation tenant garantie.
+    // Retourne null si folio absent ou parent cross-tenant.
+    async resoudreFolioCible(folioId, hotelId, trx) {
+      const folio = await conn(trx)('folios')
+        .where({ id: folioId, hotel_id: hotelId })
+        .first()
+
+      if (!folio) return null
+
+      // Cas standard — comportement inchangé
+      if (!folio.folio_parent_id)
+        return { folio, estGroupe: false, folioEnfantId: null }
+
+      // Cas groupe — résolution vers le folio master
+      // PATCH 4 : hotel_id obligatoire sur le parent (isolation tenant)
+      const folioParent = await conn(trx)('folios')
+        .where({ id: folio.folio_parent_id, hotel_id: hotelId })
+        .first()
+
+      if (!folioParent) return null  // parent cross-tenant ou inexistant → rejeté
+
+      return { folio: folioParent, estGroupe: true, folioEnfantId: folioId }
     },
 
     // Trouver un folio par id (scope double — isolation tenant)

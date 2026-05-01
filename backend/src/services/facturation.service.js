@@ -60,20 +60,33 @@ function createFacturationService({ db, cache }) {
     },
 
     // ── GET solde direct par folioId ──────────────────────────────────────
+    // PATCH 3 : si folio enfant (folio_parent_id != null), retourne le solde
+    // du folio master — le solde consolidé inclut toutes les charges enfants
+    // et les crédits déposés sur le master.
     async getSolde(folioId, hotelId) {
       const cle = cleSolde(hotelId, folioId)
       const cached = await cache.get(cle)
       if (cached) return cached
 
-      // Vérifier existence + isolation tenant avant le calcul
-      const folio = await repo.trouverFolioParId(folioId, hotelId)
-      if (!folio) throw new NotFoundError('Folio', folioId)
+      // Résolution : enfant → master si applicable
+      const resolution = await repo.resoudreFolioCible(folioId, hotelId)
+      if (!resolution) throw new NotFoundError('Folio', folioId)
 
-      const solde = await repo.getSolde(folioId, hotelId)
+      const { folio } = resolution  // folio master si groupe, sinon folio original
+      const folioIdCible = folio.id
+
+      const solde = await repo.getSolde(folioIdCible, hotelId)
       if (!solde) throw new DomainError('Calcul de solde impossible', 'SOLDE_CALCUL_ERREUR', 500)
 
-      await cache.set(cle, solde, 15)  // TTL court — solde très volatile
-      return solde
+      const resultat = {
+        ...solde,
+        folio_id_demande: folioId,       // folio demandé par l'appelant
+        folio_id_calcule: folioIdCible,  // folio sur lequel le calcul est effectué
+        est_groupe: resolution.estGroupe,
+      }
+
+      await cache.set(cle, resultat, 15)
+      return resultat
     },
 
     // ── Ajout de ligne manuelle (staff) ───────────────────────────────────
@@ -144,28 +157,44 @@ function createFacturationService({ db, cache }) {
       const estAsync = MOYENS_ASYNC.includes(typePaiement)
       let paiement
       let ligne = null
-      let reservationId  // extrait dans la transaction pour invalider le cache post-commit
+      let reservationId   // extrait dans la transaction pour invalider le cache post-commit
+      let folioIdMaster   // PATCH 1 : folio réellement modifié (master si groupe)
 
       try {
         await db.transaction(async (trx) => {
-          const folio = await repo.trouverFolioParId(folioId, hotelId, trx)
-          if (!folio) throw new NotFoundError('Folio', folioId)
+          // PATCH 1+2+5 — Résolution du folio cible (groupe ou standard)
+          // Si folio_parent_id != NULL → paiement sur le folio MASTER
+          // Comportement inchangé si folio_parent_id = NULL
+          const resolution = await repo.resoudreFolioCible(folioId, hotelId, trx)
+          if (!resolution) throw new NotFoundError('Folio', folioId)
+
+          const { folio, estGroupe, folioEnfantId } = resolution
+          const folioIdCible = folio.id  // master si groupe, original sinon
+          folioIdMaster = folioIdCible   // PATCH 1 : exposé hors transaction pour invalidation
 
           reservationId = folio.reservation_id
 
-          // Folio doit être ouvert ou en_attente pour recevoir un paiement
+          // Folio cible doit être ouvert ou en_attente pour recevoir un paiement
           if (!['ouvert', 'en_attente'].includes(folio.statut))
             throw new ConflictError(
-              `Paiement impossible : folio en statut "${folio.statut}"`,
+              `Paiement impossible : folio ${estGroupe ? 'master ' : ''}en statut "${folio.statut}"`,
               'FOLIO_NON_PAYABLE',
-              { folio_id: folioId, statut: folio.statut }
+              { folio_id: folioIdCible, folio_enfant_id: folioEnfantId, statut: folio.statut }
             )
 
           const montantFloat = parseFloat(montant)
 
-          // INSERT paiement
+          // PATCH 2 — Rejet si devise incompatible avec le folio cible
+          if (devise && devise !== folio.devise)
+            throw new DomainError(
+              'Devise incompatible avec le folio',
+              'DEVISE_INCOMPATIBLE',
+              { folio_devise: folio.devise, paiement_devise: devise }
+            )
+
+          // INSERT paiement — toujours sur le folio master
           paiement = await repo.creerPaiement({
-            folio_id:         folioId,
+            folio_id:         folioIdCible,
             hotel_id:         hotelId,
             tenant_id:        tenantId,
             type_paiement:    typePaiement,
@@ -173,54 +202,60 @@ function createFacturationService({ db, cache }) {
             montant:          montantFloat,
             devise:           devise || folio.devise,
             numero_telephone: numeroTelephone || null,
-            notes:            notes || null,
+            notes:            notes
+              ? `${notes}${estGroupe ? ` [groupe, enfant: ${folioEnfantId}]` : ''}`
+              : estGroupe ? `Paiement groupe — folio enfant: ${folioEnfantId}` : null,
             idempotency_key:  idempotencyKey || null,
             traite_par:       acteurId || null,
             source_module:    'staff',
           }, trx)
 
-          // CAS SYNCHRONE : INSERT ligne credit dans le même lot
+          // CAS SYNCHRONE : INSERT ligne credit sur le folio master
           if (!estAsync) {
             ligne = await repo.insererLigne({
-              folio_id:      folioId,
+              folio_id:      folioIdCible,
               hotel_id:      hotelId,
               type_ligne:    'paiement',
               sens:          'credit',
               montant:       montantFloat,
               devise:        devise || folio.devise,
-              description:   `Paiement ${typePaiement} — réf. ${paiement.id.slice(0, 8)}`,
+              description:   `Paiement ${typePaiement} — réf. ${paiement.id.slice(0, 8)}${estGroupe ? ' (groupe)' : ''}`,
               reference_id:  paiement.id,
               reference_type: 'paiement',
               source_module: 'staff',
               cree_par:      acteurId || null,
               cree_par_type: 'staff',
-              metadata:      { type_paiement: typePaiement },
+              metadata:      {
+                type_paiement: typePaiement,
+                est_groupe:    estGroupe,
+                folio_enfant_id: folioEnfantId,
+              },
             }, trx)
 
-            // Lier la ligne au paiement — null pour referenceExterne (cas synchrone)
             await repo.confirmerPaiement(paiement.id, hotelId, acteurId, ligne.id, null, trx)
           }
 
-          const solde = await repo.getSolde(folioId, hotelId, trx)
+          const solde = await repo.getSolde(folioIdCible, hotelId, trx)
           await repo.insererLog({
-            hotel_id:     hotelId,
-            folio_id:     folioId,
-            paiement_id:  paiement.id,
-            action:       estAsync ? 'paiement_initie' : 'paiement_confirme',
+            hotel_id:      hotelId,
+            folio_id:      folioIdCible,
+            paiement_id:   paiement.id,
+            action:        estAsync ? 'paiement_initie' : 'paiement_confirme',
             source_module: 'staff',
-            montant:      montantFloat,
-            solde_apres:  solde?.solde_du ?? null,
-            acteur_id:    acteurId || null,
-            acteur_type:  'staff',
+            montant:       montantFloat,
+            solde_apres:   solde?.solde_du ?? null,
+            acteur_id:     acteurId || null,
+            acteur_type:   'staff',
             payload: {
-              type_paiement: typePaiement,
-              est_async: estAsync,
-              ligne_id: ligne?.id ?? null,
+              type_paiement:   typePaiement,
+              est_async:       estAsync,
+              est_groupe:      estGroupe,
+              folio_enfant_id: folioEnfantId,
+              ligne_id:        ligne?.id ?? null,
             },
           }, trx)
         })
       } catch (err) {
-        // Anti-doublon idempotency_key (paiement offline rejoué)
         if (err.code === '23505')
           throw new ConflictError(
             'Ce paiement a déjà été enregistré',
@@ -230,11 +265,11 @@ function createFacturationService({ db, cache }) {
         throw err
       }
 
-      await invaliderFolio(hotelId, folioId, reservationId)
+      // PATCH 1 : invalider le folio master (et non l'enfant) si paiement groupe
+      const folioIdAInvalider = folioIdMaster
+      await invaliderFolio(hotelId, folioIdAInvalider, reservationId)
       return { paiement, ligne }
     },
-
-    // ── Confirmer un paiement mobile money ────────────────────────────────
     //
     // RÈGLES :
     //   1. Le paiement doit exister et être en statut 'en_attente'

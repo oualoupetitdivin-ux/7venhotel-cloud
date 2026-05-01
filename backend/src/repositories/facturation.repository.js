@@ -152,6 +152,15 @@ function createFacturationRepository(db) {
       return !!row
     },
 
+    // Trouver un paiement par reference_externe (webhook entrant sans hotel_id)
+    // L'isolation tenant est assurée : hotel_id est lu depuis le paiement trouvé
+    // et transmis à confirmerPaiement — jamais depuis un input extérieur.
+    async trouverParReferenceExterne(referenceExterne, trx) {
+      return conn(trx)('paiements')
+        .where({ reference_externe: referenceExterne })
+        .first() ?? null
+    },
+
     // Confirmer un paiement (UPDATE autorisé sur paiements — pas sur folio_lignes)
     async confirmerPaiement(paiementId, hotelId, acteurId, folioLigneId, referenceExterne, trx) {
       const c = conn(trx)

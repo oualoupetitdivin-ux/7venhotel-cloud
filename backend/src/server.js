@@ -353,6 +353,7 @@ await server.register(async function(app) {
   await app.register(require('./routes/facturation.route'), { prefix: '/facturation' })
   await app.register(require('./routes/analytics'),   { prefix: '/analytics' })
   await app.register(require('./routes/ai'),          { prefix: '/ai' })
+  await app.register(require('./routes/ia.route'), { prefix: '/ia' })
   await app.register(require('./routes/uploads'),     { prefix: '/uploads' })
 
   // ✅ NOUVEAU PORTAIL (remplace portail-chambre + portail-client)

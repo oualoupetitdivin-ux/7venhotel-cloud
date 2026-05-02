@@ -136,94 +136,85 @@ CREATE INDEX IF NOT EXISTS idx_dm_revpar_chambre_segment
 -- =============================================================================
 
 -- ── Vue : Moyenne mobile 7 jours sur RevPAR ──────────────────────────────────
+-- ── Vue : Moyenne mobile 7 jours sur RevPAR ──────────────────────────────────
 CREATE OR REPLACE VIEW v_predictif_revpar_7j AS
 SELECT
   h.hotel_id,
   h.date_jour,
+
   -- RevPAR du jour
-  ROUND(h.revenu_hebergement / NULLIF(h.chambres_disponibles, 0), 0) AS revpar_jour,
-  -- Moyenne mobile 7 jours (fenêtre glissante)
+  ROUND((h.revenu_hebergement / NULLIF(h.chambres_disponibles, 0))::numeric, 0) AS revpar_jour,
+
+  -- Moyenne mobile 7 jours
   ROUND(
-    AVG(h.revenu_hebergement / NULLIF(h.chambres_disponibles, 0))
+    AVG((h.revenu_hebergement / NULLIF(h.chambres_disponibles, 0))::numeric)
       OVER (PARTITION BY h.hotel_id ORDER BY h.date_jour
             ROWS BETWEEN 6 PRECEDING AND CURRENT ROW),
     0
   ) AS revpar_mm7,
+
   -- Moyenne mobile 30 jours
   ROUND(
-    AVG(h.revenu_hebergement / NULLIF(h.chambres_disponibles, 0))
+    AVG((h.revenu_hebergement / NULLIF(h.chambres_disponibles, 0))::numeric)
       OVER (PARTITION BY h.hotel_id ORDER BY h.date_jour
             ROWS BETWEEN 29 PRECEDING AND CURRENT ROW),
     0
   ) AS revpar_mm30,
-  -- Tendance : ratio entre la moyenne mobile 7j actuelle et celle d'il y a 7 jours
+
+  -- Tendance
   ROUND(
-    (AVG(h.revenu_hebergement / NULLIF(h.chambres_disponibles, 0))
-       OVER (PARTITION BY h.hotel_id ORDER BY h.date_jour
-             ROWS BETWEEN 6 PRECEDING AND CURRENT ROW))
+    (
+      AVG((h.revenu_hebergement / NULLIF(h.chambres_disponibles, 0))::numeric)
+        OVER (PARTITION BY h.hotel_id ORDER BY h.date_jour
+              ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)
+    )
     /
     NULLIF(
-      AVG(h.revenu_hebergement / NULLIF(h.chambres_disponibles, 0))
+      AVG((h.revenu_hebergement / NULLIF(h.chambres_disponibles, 0))::numeric)
         OVER (PARTITION BY h.hotel_id ORDER BY h.date_jour
               ROWS BETWEEN 13 PRECEDING AND 7 PRECEDING)
     , 0) * 100 - 100,
     1
   ) AS tendance_pct
+
 FROM kpi_daily_hebergement h;
 
--- ── Vue : Saisonnalité — ratio jour vs même jour N-1 ─────────────────────────
-CREATE OR REPLACE VIEW v_predictif_saisonnalite AS
-SELECT
-  cur.hotel_id,
-  cur.date_jour,
-  cur.revenu_hebergement                                          AS ca_heb_actuel,
-  prev.revenu_hebergement                                         AS ca_heb_n_moins_1,
-  ROUND(
-    (cur.revenu_hebergement - COALESCE(prev.revenu_hebergement, 0))
-    / NULLIF(prev.revenu_hebergement, 0) * 100,
-    1
-  )                                                               AS evolution_yoy_pct,
-  cur.chambres_occupees::decimal / NULLIF(cur.chambres_disponibles, 0) * 100
-                                                                  AS occ_rate_actuelle,
-  COALESCE(prev.chambres_occupees, 0)::decimal
-    / NULLIF(prev.chambres_disponibles, 0) * 100                 AS occ_rate_n_moins_1
-FROM kpi_daily_hebergement cur
-LEFT JOIN kpi_daily_hebergement prev
-  ON  prev.hotel_id  = cur.hotel_id
-  AND prev.date_jour = cur.date_jour - INTERVAL '364 days';
-  -- 364 jours = même jour de semaine N-1 (52 semaines exactes)
 
--- ── Vue : Projection occupation 30 jours (tendance linéaire SQL) ─────────────
+-- ── Vue : Projection occupation 30 jours ─────────────
 CREATE OR REPLACE VIEW v_predictif_projection_30j AS
 WITH base AS (
   SELECT
     hotel_id,
     date_jour,
     chambres_occupees::decimal / NULLIF(chambres_disponibles, 0) AS occ_rate,
-    -- Numéro de jour pour régression linéaire
     ROW_NUMBER() OVER (PARTITION BY hotel_id ORDER BY date_jour) AS n
   FROM kpi_daily_hebergement
 ),
 regression AS (
   SELECT
     hotel_id,
-    -- Pente de la tendance (régression OLS simplifiée sur les 30 derniers jours)
     REGR_SLOPE(occ_rate, n)     AS pente,
     REGR_INTERCEPT(occ_rate, n) AS intercept,
-    MAX(n)                       AS n_max,
-    MAX(date_jour)               AS derniere_date
+    MAX(n)                      AS n_max,
+    MAX(date_jour)              AS derniere_date
   FROM base
   WHERE date_jour >= CURRENT_DATE - INTERVAL '30 days'
   GROUP BY hotel_id
 )
 SELECT
   r.hotel_id,
-  CURRENT_DATE + (serie.j || ' days')::INTERVAL          AS date_projection,
-  GREATEST(0, LEAST(100, ROUND(
-    (r.pente * (r.n_max + serie.j) + r.intercept) * 100,
-    1
-  )))                                                       AS occ_projetee_pct,
-  r.derniere_date                                           AS basee_sur_donnees_jusqu_au
+  CURRENT_DATE + (serie.j || ' days')::INTERVAL AS date_projection,
+
+  GREATEST(
+    0,
+    LEAST(
+      100,
+      ROUND(((r.pente * (r.n_max + serie.j) + r.intercept) * 100)::numeric, 1)
+    )
+  ) AS occ_projetee_pct,
+
+  r.derniere_date AS basee_sur_donnees_jusqu_au
+
 FROM regression r
 CROSS JOIN generate_series(1, 30) AS serie(j);
 
@@ -268,7 +259,7 @@ peut être créé via POST /ia/scenario.';
 -- Vue de calcul du simulateur (SQL pur — zéro JS)
 CREATE OR REPLACE VIEW v_simulation_resultats AS
 SELECT
-  s.id                                                        AS scenario_id,
+  s.id AS scenario_id,
   s.hotel_id,
   s.nom,
   s.nb_jours,
@@ -276,46 +267,36 @@ SELECT
   s.taux_occupation_cible,
   s.adr_cible,
 
-  -- Résultats calculés
-  ROUND(s.nb_chambres * (s.taux_occupation_cible / 100))      AS chambres_occupees_moy,
-  ROUND(s.nb_chambres * (s.taux_occupation_cible / 100)
-        * s.nb_jours)                                         AS total_nuitees,
+  ROUND((s.nb_chambres * (s.taux_occupation_cible / 100))::numeric, 0) AS chambres_occupees_moy,
 
-  -- CA Hébergement
-  ROUND(s.nb_chambres * (s.taux_occupation_cible / 100)
-        * s.adr_cible * s.nb_jours)                           AS ca_hebergement,
+  ROUND((s.nb_chambres * (s.taux_occupation_cible / 100) * s.nb_jours)::numeric, 0) AS total_nuitees,
 
-  -- CA Total (hébergement + restaurant + services)
-  ROUND(
+  ROUND((s.nb_chambres * (s.taux_occupation_cible / 100) * s.adr_cible * s.nb_jours)::numeric, 0) AS ca_hebergement,
+
+  ROUND((
     (s.nb_chambres * (s.taux_occupation_cible / 100) * s.adr_cible * s.nb_jours)
     / NULLIF(1 - (s.pct_restaurant + s.pct_services) / 100, 0)
-  )                                                           AS ca_total,
+  )::numeric, 0) AS ca_total,
 
-  -- RevPAR moyen sur la période = CA hébergement / (nb_chambres × nb_jours)
-  -- Équivalent à : ADR × taux_occupation
-  -- NB : ce RevPAR est une MOYENNE sur toute la période simulée, pas un RevPAR journalier ponctuel
-  ROUND(
+  ROUND((
     (s.nb_chambres * (s.taux_occupation_cible / 100) * s.adr_cible * s.nb_jours)
     / NULLIF(s.nb_chambres::decimal * s.nb_jours, 0)
-  )                                                               AS revpar_moyen_periode,
+  )::numeric, 0) AS revpar_moyen_periode,
 
-  -- Coûts
-  ROUND(s.cout_fixe_journalier * s.nb_jours
-        + s.cout_variable_par_nuitee
-          * s.nb_chambres * (s.taux_occupation_cible / 100) * s.nb_jours)
-                                                              AS couts_totaux,
+  ROUND((
+    s.cout_fixe_journalier * s.nb_jours
+    + s.cout_variable_par_nuitee
+      * s.nb_chambres * (s.taux_occupation_cible / 100) * s.nb_jours
+  )::numeric, 0) AS couts_totaux,
 
-  -- Résultat brut (GOP approximatif)
-  ROUND(
-    (s.nb_chambres * (s.taux_occupation_cible / 100)
-      * s.adr_cible * s.nb_jours)
+  ROUND((
+    (s.nb_chambres * (s.taux_occupation_cible / 100) * s.adr_cible * s.nb_jours)
     - (s.cout_fixe_journalier * s.nb_jours
        + s.cout_variable_par_nuitee
          * s.nb_chambres * (s.taux_occupation_cible / 100) * s.nb_jours)
-  )                                                           AS gop_estime,
+  )::numeric, 0) AS gop_estime,
 
-  -- Marge GOP
-  ROUND(
+  ROUND((
     (
       (s.nb_chambres * (s.taux_occupation_cible / 100) * s.adr_cible * s.nb_jours)
       - (s.cout_fixe_journalier * s.nb_jours
@@ -324,9 +305,8 @@ SELECT
     )
     / NULLIF(
         s.nb_chambres * (s.taux_occupation_cible / 100) * s.adr_cible * s.nb_jours
-      , 0) * 100,
-    1
-  )                                                           AS marge_gop_pct
+      , 0) * 100
+  )::numeric, 1) AS marge_gop_pct
 
 FROM simulateur_scenarios s;
 

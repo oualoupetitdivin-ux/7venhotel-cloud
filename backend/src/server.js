@@ -21,6 +21,7 @@ require('dotenv').config({
 
 const Fastify = require('fastify')
 const path    = require('path')
+const kpiJob = require('./jobs/kpi-aggregation.job')
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CORRECTION #2 — Validation fail-fast des variables d'environnement critiques
@@ -441,6 +442,7 @@ async function demarrer() {
 
     await server.listen({ port, host })
     server.log.info(`🚀 7venHotel Cloud API démarré sur http://${host}:${port}`)
+    kpiJob.demarrer({ db: server.db, logger: server.log })
     server.log.info(`📊 Environnement : ${process.env.NODE_ENV}`)
     server.log.info(`🧠 DB Mode : ${
       process.env.DATABASE_PRIVATE_URL ? 'PRIVATE' :
@@ -462,6 +464,7 @@ async function demarrer() {
 // ── Arrêt propre (SIGTERM Railway, SIGINT local) ───────────────────────
 const arreterGracieusement = async (signal) => {
   server.log.info(`Signal ${signal} reçu — arrêt en cours...`)
+  kpiJob.arreter(server.log)
   await server.close()
   process.exit(0)
 }

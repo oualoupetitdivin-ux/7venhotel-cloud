@@ -1,67 +1,126 @@
 'use strict'
 
+// =============================================================================
+// kpi-aggregation.job.js — VERSION LEGACY COMPATIBLE PRODUCTION
+//
+// Tables utilisées (toutes existantes en production) :
+//   chambres, reservations, commandes_restaurant, paiements, hotels
+//   lignes_folio + folios (pour total_debits et solde_du)
+//
+// LIMITES DOCUMENTÉES :
+//   revenu_hebergement : APPROXIMATIF — SUM(tarif_nuit) réservations actives
+//                        (pas d'accrual — lignes_folio.type='hebergement' jamais inséré)
+//   total_debits       : PARTIEL — lignes_folio alimentée uniquement par restaurant.js
+//   solde_du           : APPROXIMATIF — lignes_folio partielle - paiements valides
+//   nb_annulations     : APPROXIMATIF — fallback mis_a_jour_le (annulee_le absent schema)
+//
+// MÉTRIQUES EXACTES :
+//   chambres_occupees, occ_rate_pct, arrivees, departs, no_shows, los_moyen
+//   ca_restaurant, nb_commandes (source directe commandes_restaurant)
+//   cash_encaisse, mobile_money_encaisse, total_credits, nb_paiements_*
+// =============================================================================
+
 const HEURE_H   = 0
 const HEURE_MIN = 30
+
 let _timer   = null
 let _enCours = false
 
 function _msJusquaProchaineCible() {
-  const now = new Date(), cible = new Date(now)
+  const now   = new Date()
+  const cible = new Date(now)
   cible.setHours(HEURE_H, HEURE_MIN, 0, 0)
   if (cible <= now) cible.setDate(cible.getDate() + 1)
   return cible - now
 }
 
+// Tous les hôtels actifs (tenants actifs uniquement)
 async function _listerHotels(db) {
-  return db('hotels').select('id AS hotel_id', 'nombre_chambres')
+  return db('hotels AS h')
+    .join('tenants AS t', 't.id', 'h.tenant_id')
+    .whereIn('t.statut', ['actif', 'essai'])
+    .select('h.id AS hotel_id', 'h.nombre_chambres')
 }
 
+// =============================================================================
+// HÉBERGEMENT
+// Toutes les requêtes sur : chambres, reservations
+// revenu_hebergement : SUM(tarif_nuit) — APPROXIMATIF (pas d'accrual)
+// =============================================================================
 async function _agregerHebergement(db, hotelId, dateStr) {
-  const [{ disponibles }] = await db('chambres')
-    .where({ hotel_id: hotelId, hors_service: false }).count('id AS disponibles')
 
-  // FIX v2: 1 chambre = 1 nuitée (pas SUM(nombre_nuits))
+  // Chambres disponibles (hors_service exclues)
+  const [{ disponibles }] = await db('chambres')
+    .where({ hotel_id: hotelId, hors_service: false })
+    .count('id AS disponibles')
+
+  // Chambres occupées : COUNT DISTINCT chambre_id sur réservations actives
+  // Statuts ENUM valides : 'arrivee', 'depart_aujourd_hui'
   const [{ occupees }] = await db('reservations')
-    .where({ hotel_id: hotelId }).whereIn('statut', ['arrivee','depart_aujourd_hui','terminee'])
-    .where('date_arrivee', '<=', dateStr).where('date_depart', '>', dateStr)
+    .where({ hotel_id: hotelId })
+    .whereIn('statut', ['arrivee', 'depart_aujourd_hui'])
+    .where('date_arrivee', '<=', dateStr)
+    .where('date_depart',  '>',  dateStr)
     .countDistinct('chambre_id AS occupees')
 
+  // Nuitées : 1 réservation active = 1 nuitée (modèle 1 chambre / réservation)
   const [{ nuitees }] = await db('reservations')
-    .where({ hotel_id: hotelId }).whereIn('statut', ['arrivee','depart_aujourd_hui','terminee'])
-    .where('date_arrivee', '<=', dateStr).where('date_depart', '>', dateStr)
+    .where({ hotel_id: hotelId })
+    .whereIn('statut', ['arrivee', 'depart_aujourd_hui'])
+    .where('date_arrivee', '<=', dateStr)
+    .where('date_depart',  '>',  dateStr)
     .count('id AS nuitees')
 
-  const [{ revenu }] = await db('folio_lignes')
-    .where({ hotel_id: hotelId, type_ligne: 'nuitee', sens: 'debit', date_nuitee: dateStr })
-    .sum('montant AS revenu')
+  // Revenu hébergement APPROXIMATIF : SUM(tarif_nuit) réservations actives
+  // Limite : ne reflète pas les ajustements manuels ni les réductions appliquées
+  // Source exacte future : lignes_folio type='hebergement' (non alimentée actuellement)
+  const [{ revenu }] = await db('reservations')
+    .where({ hotel_id: hotelId })
+    .whereIn('statut', ['arrivee', 'depart_aujourd_hui'])
+    .where('date_arrivee', '<=', dateStr)
+    .where('date_depart',  '>',  dateStr)
+    .sum('tarif_nuit AS revenu')
 
+  // Arrivées du jour (attendues ou déjà checkées)
   const [{ arrivees }] = await db('reservations')
     .where({ hotel_id: hotelId, date_arrivee: dateStr })
-    .whereNotIn('statut', ['annulee','no_show']).count('id AS arrivees')
+    .whereNotIn('statut', ['annulee', 'no_show'])
+    .count('id AS arrivees')
 
+  // Départs du jour : date_depart = aujourd'hui, client encore présent ou en cours
   const [{ departs }] = await db('reservations')
-    .where({ hotel_id: hotelId, date_depart: dateStr, statut: 'terminee' }).count('id AS departs')
+    .where({ hotel_id: hotelId, date_depart: dateStr })
+    .whereIn('statut', ['arrivee', 'depart_aujourd_hui'])
+    .count('id AS departs')
 
-  // FIX v2: annulee_le (pas annulee_par UUID)
+  // Annulations du jour
+  // Fallback : mis_a_jour_le (annulee_le absent du schema production)
+  // Approximatif : mis_a_jour_le peut être modifié après l'annulation initiale
   const [{ annulations }] = await db('reservations')
     .where({ hotel_id: hotelId, statut: 'annulee' })
-    .where(db.raw('DATE(annulee_le) = ?', [dateStr]))
-    .count('id AS annulations').catch(() => [{ annulations: 0 }])
+    .where(db.raw('DATE(mis_a_jour_le) = ?', [dateStr]))
+    .count('id AS annulations')
+    .catch(() => [{ annulations: 0 }])
 
+  // No-shows du jour
   const [{ no_shows }] = await db('reservations')
     .where({ hotel_id: hotelId, statut: 'no_show', date_arrivee: dateStr })
     .count('id AS no_shows')
 
+  // Revenu perdu sur no-shows (tarif_nuit × nombre_nuits — APPROXIMATIF)
   const [{ perdu }] = await db('reservations')
     .where({ hotel_id: hotelId, statut: 'no_show', date_arrivee: dateStr })
     .sum(db.raw('tarif_nuit * nombre_nuits AS perdu'))
 
+  // Durée de séjour moyenne des arrivées du jour
   const [{ los }] = await db('reservations')
     .where({ hotel_id: hotelId, date_arrivee: dateStr })
-    .whereNotIn('statut', ['annulee','no_show']).avg('nombre_nuits AS los')
+    .whereNotIn('statut', ['annulee', 'no_show'])
+    .avg('nombre_nuits AS los')
 
   return {
-    hotel_id: hotelId, date_jour: dateStr,
+    hotel_id:             hotelId,
+    date_jour:            dateStr,
     chambres_disponibles: parseInt(disponibles)  || 0,
     chambres_occupees:    parseInt(occupees)     || 0,
     nb_nuitees:           parseInt(nuitees)      || 0,
@@ -76,6 +135,10 @@ async function _agregerHebergement(db, hotelId, dateStr) {
   }
 }
 
+// =============================================================================
+// RESTAURANT
+// Source : commandes_restaurant — EXACTE
+// =============================================================================
 async function _agregerRestaurant(db, hotelId, dateStr) {
   const rows = await db('commandes_restaurant')
     .where({ hotel_id: hotelId, statut: 'servie' })
@@ -85,9 +148,12 @@ async function _agregerRestaurant(db, hotelId, dateStr) {
       db.raw('COALESCE(SUM(total), 0) AS ca_total'),
       db.raw("COUNT(*) FILTER (WHERE reservation_id IS NOT NULL) AS nb_hotel"),
       db.raw("COUNT(*) FILTER (WHERE reservation_id IS NULL)     AS nb_externe")
-    ).first()
+    )
+    .first()
+
   return {
-    hotel_id: hotelId, date_jour: dateStr,
+    hotel_id:           hotelId,
+    date_jour:          dateStr,
     nb_commandes:       parseInt(rows.nb_commandes)  || 0,
     chiffre_affaires:   parseFloat(rows.ca_total)    || 0,
     nb_clients_hotel:   parseInt(rows.nb_hotel)      || 0,
@@ -96,226 +162,176 @@ async function _agregerRestaurant(db, hotelId, dateStr) {
   }
 }
 
+// =============================================================================
+// FINANCE
+// Sources :
+//   lignes_folio + folios  → total_debits, solde_du   (PARTIEL / APPROXIMATIF)
+//   paiements              → total_credits, encaissements (EXACT)
+//
+// total_debits : SUM(lignes_folio.montant_total) du jour, via folios.hotel_id
+//   Partiel : lignes_folio alimentée uniquement par restaurant.js (type='restaurant')
+//   L'hébergement n'y est PAS encore inscrit automatiquement
+//
+// total_credits : SUM(paiements.montant WHERE statut='valide') — EXACT
+//
+// solde_du : cumulatif lignes_folio - cumulatif paiements valides
+//   Approximatif tant que lignes_folio n'est pas complète
+// =============================================================================
 async function _agregerFinance(db, hotelId, dateStr) {
-  const [ledger] = await db('folio_lignes').where({ hotel_id: hotelId })
-    .where(db.raw('DATE(cree_le) = ?', [dateStr]))
-    .select(
-      db.raw("COALESCE(SUM(CASE WHEN sens='debit'  THEN montant ELSE 0 END),0) AS total_debits"),
-      db.raw("COALESCE(SUM(CASE WHEN sens='credit' THEN montant ELSE 0 END),0) AS total_credits")
-    )
 
-  const datePaiement = `DATE(COALESCE(traite_le, confirme_le, cree_le)) = ?`
+  // Débits du jour via lignes_folio (JOIN folios pour hotel_id — isolation tenant)
+  const [debits] = await db('lignes_folio AS lf')
+    .join('folios AS f', 'f.id', 'lf.folio_id')
+    .where('f.hotel_id', hotelId)
+    .where('lf.date_facturation', dateStr)
+    .select(db.raw('COALESCE(SUM(lf.montant_total), 0) AS total_debits'))
+
+  // Filtre date paiements : traite_le si présent, sinon cree_le
+  // confirme_le supprimé (absent du schema paiements en production)
+  const datePaiement = `DATE(COALESCE(traite_le, cree_le)) = ?`
+
+  // Cash encaissé du jour (espèces + carte + virement) — EXACT
   const [cash] = await db('paiements')
     .where({ hotel_id: hotelId, statut: 'valide' })
-    .whereIn('type_paiement', ['especes','carte','virement'])
-    .where(db.raw(datePaiement, [dateStr])).select(db.raw('COALESCE(SUM(montant),0) AS montant'))
+    .whereIn('type_paiement', ['especes', 'carte', 'virement'])
+    .where(db.raw(datePaiement, [dateStr]))
+    .select(db.raw('COALESCE(SUM(montant), 0) AS montant'))
 
+  // Mobile money du jour — EXACT
   const [mm] = await db('paiements')
     .where({ hotel_id: hotelId, statut: 'valide', type_paiement: 'mobile_money' })
-    .where(db.raw(datePaiement, [dateStr])).select(db.raw('COALESCE(SUM(montant),0) AS montant'))
+    .where(db.raw(datePaiement, [dateStr]))
+    .select(db.raw('COALESCE(SUM(montant), 0) AS montant'))
 
-  // FIX v2: solde cumulatif jusqu'à dateStr (snapshot clôture)
-  const soldeResult = await db.raw(`
-    SELECT COALESCE(SUM(
-      CASE WHEN fl.sens='debit' THEN fl.montant WHEN fl.sens='credit' THEN -fl.montant ELSE 0 END
-    ),0) AS solde_total
-    FROM folio_lignes fl
-    WHERE fl.hotel_id = ? AND DATE(fl.cree_le) <= ?
-  `, [hotelId, dateStr])
+  // Total crédits = tous paiements valides du jour (toutes méthodes) — EXACT
+  const [credits] = await db('paiements')
+    .where({ hotel_id: hotelId, statut: 'valide' })
+    .where(db.raw(datePaiement, [dateStr]))
+    .select(db.raw('COALESCE(SUM(montant), 0) AS total_credits'))
 
-  const [compteurs] = await db('paiements').where({ hotel_id: hotelId })
+  // Solde dû cumulatif = SUM(lignes_folio jusqu'à dateStr) - SUM(paiements valides jusqu'à dateStr)
+  // APPROXIMATIF : dépend du taux d'alimentation de lignes_folio
+  const [soldeDebits] = await db('lignes_folio AS lf')
+    .join('folios AS f', 'f.id', 'lf.folio_id')
+    .where('f.hotel_id', hotelId)
+    .where('lf.date_facturation', '<=', dateStr)
+    .select(db.raw('COALESCE(SUM(lf.montant_total), 0) AS total'))
+
+  const [soldeCredits] = await db('paiements')
+    .where({ hotel_id: hotelId, statut: 'valide' })
+    .where(db.raw('DATE(COALESCE(traite_le, cree_le)) <= ?', [dateStr]))
+    .select(db.raw('COALESCE(SUM(montant), 0) AS total'))
+
+  // Compteurs paiements du jour (tous statuts — pour taux échec)
+  const [compteurs] = await db('paiements')
+    .where({ hotel_id: hotelId })
     .where(db.raw('DATE(cree_le) = ?', [dateStr]))
     .select(
-      db.raw("COUNT(*) FILTER (WHERE statut='valide') AS nb_valides"),
-      db.raw("COUNT(*) FILTER (WHERE statut='echec')  AS nb_echec")
+      db.raw("COUNT(*) FILTER (WHERE statut = 'valide') AS nb_valides"),
+      db.raw("COUNT(*) FILTER (WHERE statut = 'echec')  AS nb_echec")
     )
 
   return {
-    hotel_id: hotelId, date_jour: dateStr,
-    total_debits:          parseFloat(ledger.total_debits)    || 0,
-    total_credits:         parseFloat(ledger.total_credits)   || 0,
-    cash_encaisse:         parseFloat(cash.montant)           || 0,
-    mobile_money_encaisse: parseFloat(mm.montant)             || 0,
-    solde_du:              parseFloat(soldeResult.rows[0].solde_total) || 0,
-    nb_paiements_valides:  parseInt(compteurs.nb_valides)     || 0,
-    nb_paiements_echec:    parseInt(compteurs.nb_echec)       || 0,
+    hotel_id:              hotelId,
+    date_jour:             dateStr,
+    total_debits:          parseFloat(debits.total_debits)   || 0,
+    total_credits:         parseFloat(credits.total_credits) || 0,
+    cash_encaisse:         parseFloat(cash.montant)          || 0,
+    mobile_money_encaisse: parseFloat(mm.montant)            || 0,
+    solde_du:              Math.max(0,
+                             (parseFloat(soldeDebits.total)  || 0)
+                           - (parseFloat(soldeCredits.total) || 0)),
+    nb_paiements_valides:  parseInt(compteurs.nb_valides)    || 0,
+    nb_paiements_echec:    parseInt(compteurs.nb_echec)      || 0,
     calcule_le:            db.fn.now(),
   }
 }
 
-async function _agregerAnalytics(db, hotelId, dateStr) {
-  // Revenue comptable = TOUS les débits folio (nuitées + restaurant + services)
-  // FIX 2 : revenue_hebergement = nuitées UNIQUEMENT (type_ligne = 'nuitee')
-  // Deux requêtes séparées pour la précision métier
-  const revenueHebergement = await db('folio_lignes AS fl')
-    .join('folios AS f',       'f.id', 'fl.folio_id')
-    .join('reservations AS r', 'r.id', 'f.reservation_id')
-    .where({ 'fl.hotel_id': hotelId, 'fl.sens': 'debit', 'fl.type_ligne': 'nuitee' })
-    .where(db.raw('DATE(fl.cree_le) = ?', [dateStr]))
-    .select(
-      db.raw("COALESCE(r.segment,'standard') AS segment"),
-      db.raw("COALESCE(r.source,'direct')    AS canal"),
-      db.raw("COALESCE(SUM(fl.montant),0)    AS revenu_hebergement"),
-    )
-    .groupBy('segment', 'canal')
-
-  const revenueComptable = await db('folio_lignes AS fl')
-    .join('folios AS f',        'f.id',  'fl.folio_id')
-    .join('reservations AS r',  'r.id',  'f.reservation_id')
-    .where({ 'fl.hotel_id': hotelId, 'fl.sens': 'debit' })
-    .whereIn('fl.type_ligne', ['nuitee', 'restaurant', 'service', 'minibar'])
-    .where(db.raw('DATE(fl.cree_le) = ?', [dateStr]))
-    .select(
-      db.raw("COALESCE(r.segment,'standard')  AS segment"),
-      db.raw("COALESCE(r.source,'direct')     AS canal"),
-      db.raw("COALESCE(SUM(fl.montant),0)     AS revenue_comptable"),
-    )
-    .groupBy('segment', 'canal')
-
-  // Cash réel = paiements validés du jour — segment × canal
-  // FIX 4 : alimenter cash_reel depuis paiements
-  const cashReel = await db('paiements AS p')
-    .join('folios AS f',       'f.id',  'p.folio_id')
-    .join('reservations AS r', 'r.id',  'f.reservation_id')
-    .where({ 'p.hotel_id': hotelId, 'p.statut': 'valide' })
-    .where(db.raw('DATE(COALESCE(p.traite_le, p.confirme_le, p.cree_le)) = ?', [dateStr]))
-    .select(
-      db.raw("COALESCE(r.segment,'standard')  AS segment"),
-      db.raw("COALESCE(r.source,'direct')     AS canal"),
-      db.raw("p.type_paiement"),
-      db.raw("COALESCE(SUM(p.montant),0)      AS cash_reel"),
-    )
-    .groupBy('segment', 'canal', 'type_paiement')
-
-  // Nb réservations actives par segment × canal (pour compteurs)
-  const hebRows = await db('reservations AS r')
-    .where({ 'r.hotel_id': hotelId })
-    .whereIn('r.statut', ['arrivee','depart_aujourd_hui','terminee'])
-    .where('r.date_arrivee', '<=', dateStr).where('r.date_depart', '>', dateStr)
-    .select(
-      db.raw("COALESCE(r.segment,'standard') AS segment"),
-      db.raw("COALESCE(r.source,'direct')    AS canal"),
-      db.raw("COUNT(r.id)                    AS nb_reservations"),
-    ).groupBy('segment', 'canal')
-
-  // Construire la map des lignes à insérer
-  const map = new Map()
-  const key = (s, c, t) => `${s}|${c}|${t}`
-  const base = (s, c, t) => ({
-    hotel_id: hotelId, date_jour: dateStr,
-    segment: s, canal: c, type_paiement: t,
-    nb_reservations: 0, nb_nuitees: 0, revenu_hebergement: 0,
-    nb_no_show: 0, revenu_perdu_no_show: 0, los_moyen: null,
-    nb_commandes_resto: 0, ca_restaurant: 0,
-    cash_encaisse: 0, revenue_comptable: 0, cash_reel: 0,
-    calcule_le: db.fn.now(),
-  })
-
-  for (const h of hebRows) {
-    const k = key(h.segment, h.canal, 'tous')
-    if (!map.has(k)) map.set(k, base(h.segment, h.canal, 'tous'))
-    map.get(k).nb_reservations = parseInt(h.nb_reservations) || 0
-    // nb_nuitees = nombre de réservations actives sur le jour J
-    // (1 réservation active = 1 chambre occupée = 1 nuitée consommée ce jour)
-    // Sémantique : "chambres-nuits vendues ce jour par segment/canal"
-    map.get(k).nb_nuitees      = parseInt(h.nb_reservations) || 0
-  }
-
-  for (const rc of revenueComptable) {
-    const k = key(rc.segment, rc.canal, 'tous')
-    if (!map.has(k)) map.set(k, base(rc.segment, rc.canal, 'tous'))
-    // revenue_comptable = total débits folio (hébergement + restaurant + services)
-    map.get(k).revenue_comptable  = parseFloat(rc.revenue_comptable) || 0
-  }
-
-  for (const rh of revenueHebergement) {
-    const k = key(rh.segment, rh.canal, 'tous')
-    if (!map.has(k)) map.set(k, base(rh.segment, rh.canal, 'tous'))
-    // revenu_hebergement = nuitées uniquement (type_ligne='nuitee')
-    map.get(k).revenu_hebergement = parseFloat(rh.revenu_hebergement) || 0
-  }
-
-  for (const p of cashReel) {
-    // Ligne par type_paiement
-    const k = key(p.segment, p.canal, p.type_paiement)
-    if (!map.has(k)) map.set(k, base(p.segment, p.canal, p.type_paiement))
-    const entry = map.get(k)
-    entry.cash_reel     = parseFloat(p.cash_reel) || 0
-    entry.cash_encaisse = parseFloat(p.cash_reel) || 0
-
-    // Aussi agréger dans la ligne 'tous'
-    const kTous = key(p.segment, p.canal, 'tous')
-    if (map.has(kTous)) {
-      map.get(kTous).cash_reel     += parseFloat(p.cash_reel) || 0
-      map.get(kTous).cash_encaisse += parseFloat(p.cash_reel) || 0
-    }
-  }
-
-  return [...map.values()]
-}
-
-// FIX 5 : UPSERT dans transaction atomique
-async function _upsertAnalyticsTransaction(db, hotelId, dateStr, rows) {
-  if (!rows.length) return
+// =============================================================================
+// UPSERT atomique dans les 3 tables kpi_daily_*
+// Transaction unique — si une table échoue, les 3 rollback
+// =============================================================================
+async function _upsert(db, hotelId, dateStr, heb, resto, fin) {
   await db.transaction(async (trx) => {
-    // Supprimer les lignes existantes pour cette date/hotel avant UPSERT
-    await trx('kpi_analytics_daily')
-      .where({ hotel_id: hotelId, date_jour: dateStr }).delete()
-    // Insérer les nouvelles lignes
-    await trx('kpi_analytics_daily').insert(rows)
+    await trx('kpi_daily_hebergement').insert(heb).onConflict(['hotel_id', 'date_jour']).merge()
+    await trx('kpi_daily_restaurant').insert(resto).onConflict(['hotel_id', 'date_jour']).merge()
+    await trx('kpi_daily_finance').insert(fin).onConflict(['hotel_id', 'date_jour']).merge()
   })
 }
 
+// =============================================================================
+// FONCTION PRINCIPALE — exportée pour recalcul manuel via POST /kpi/recalculer
+// dates : tableau 'YYYY-MM-DD'. Par défaut : J-1 + aujourd'hui
+// =============================================================================
 async function agreger({ db, logger, dates }) {
   if (!dates || !dates.length) {
-    const h = new Date(); h.setDate(h.getDate() - 1)
-    const a = new Date()
-    dates = [h.toISOString().split('T')[0], a.toISOString().split('T')[0]]
+    const hier  = new Date()
+    hier.setDate(hier.getDate() - 1)
+    const aujhui = new Date()
+    dates = [
+      hier.toISOString().split('T')[0],
+      aujhui.toISOString().split('T')[0],
+    ]
   }
+
   const hotels = await _listerHotels(db)
   const stats  = { hotels: hotels.length, dates: dates.length, ok: 0, erreurs: 0 }
 
   for (const hotel of hotels) {
     for (const dateStr of dates) {
       try {
-        const [heb, resto, fin, analytics] = await Promise.all([
+        const [heb, resto, fin] = await Promise.all([
           _agregerHebergement(db, hotel.hotel_id, dateStr),
           _agregerRestaurant(db, hotel.hotel_id, dateStr),
           _agregerFinance(db, hotel.hotel_id, dateStr),
-          _agregerAnalytics(db, hotel.hotel_id, dateStr),
         ])
-
-        // FIX 5 : transaction atomique sur les 3 tables principales
-        await db.transaction(async (trx) => {
-          await trx('kpi_daily_hebergement').insert(heb).onConflict().merge()
-          await trx('kpi_daily_restaurant').insert(resto).onConflict().merge()
-          await trx('kpi_daily_finance').insert(fin).onConflict().merge()
-        })
-
-        // Analytics : transaction séparée (DELETE + INSERT idempotent)
-        await _upsertAnalyticsTransaction(db, hotel.hotel_id, dateStr, analytics)
-
+        await _upsert(db, hotel.hotel_id, dateStr, heb, resto, fin)
         stats.ok++
       } catch (err) {
         stats.erreurs++
-        logger.error({ event: 'kpi_aggregation', hotel_id: hotel.hotel_id,
-          date: dateStr, err: { message: err.message } })
+        logger.error({
+          event:    'kpi_aggregation',
+          hotel_id: hotel.hotel_id,
+          date:     dateStr,
+          err:      { message: err.message, code: err.code },
+        }, 'Erreur agrégation KPI')
       }
     }
   }
-  logger.info({ event: 'kpi_aggregation', ...stats }, 'Agrégation KPI v2 terminée')
+
+  logger.info({ event: 'kpi_aggregation', ...stats }, 'Agrégation KPI terminée')
   return stats
 }
 
+// =============================================================================
+// JOB PLANIFIÉ — 00h30 chaque nuit
+// Anti-overlap : _enCours empêche deux cycles simultanés
+// =============================================================================
 async function _executer({ db, logger }) {
-  if (_enCours) { logger.warn({ event: 'kpi_aggregation_job', result: 'SKIP_IN_PROGRESS' }); return }
+  if (_enCours) {
+    logger.warn({ event: 'kpi_aggregation_job', result: 'SKIP_IN_PROGRESS' },
+      'Job KPI déjà en cours — cycle ignoré')
+    return
+  }
+
   _enCours = true
   const debut = Date.now()
+
   try {
     const stats = await agreger({ db, logger, dates: null })
-    logger.info({ event: 'kpi_aggregation_job', result: 'done', duree_ms: Date.now() - debut, ...stats })
+    logger.info({
+      event:    'kpi_aggregation_job',
+      result:   'done',
+      duree_ms: Date.now() - debut,
+      ...stats,
+    }, 'Cycle agrégation KPI terminé')
   } catch (err) {
-    logger.error({ event: 'kpi_aggregation_job', result: 'error', err: { message: err.message } })
+    logger.error({
+      event:    'kpi_aggregation_job',
+      result:   'error',
+      duree_ms: Date.now() - debut,
+      err:      { message: err.message },
+    }, 'Erreur critique job KPI')
   } finally {
     _enCours = false
     _timer   = setTimeout(() => _executer({ db, logger }), _msJusquaProchaineCible())
@@ -323,15 +339,24 @@ async function _executer({ db, logger }) {
 }
 
 function demarrer({ db, logger }) {
-  if (_timer) return
+  if (_timer) {
+    logger.warn({ event: 'kpi_aggregation_job' }, 'Job KPI déjà démarré — appel ignoré')
+    return
+  }
   const ms = _msJusquaProchaineCible()
-  logger.info({ event: 'kpi_aggregation_job', prochain_dans_ms: ms })
+  logger.info({
+    event:            'kpi_aggregation_job',
+    prochain_dans_ms: ms,
+  }, `Job KPI démarré — prochain cycle dans ${Math.round(ms / 60000)} min`)
   _timer = setTimeout(() => _executer({ db, logger }), ms)
 }
 
 function arreter(logger) {
-  if (_timer) { clearTimeout(_timer); _timer = null }
-  if (logger) logger.info({ event: 'kpi_aggregation_job' }, 'Job KPI arrêté')
+  if (_timer) {
+    clearTimeout(_timer)
+    _timer = null
+    if (logger) logger.info({ event: 'kpi_aggregation_job' }, 'Job KPI arrêté')
+  }
 }
 
 module.exports = { demarrer, arreter, agreger }

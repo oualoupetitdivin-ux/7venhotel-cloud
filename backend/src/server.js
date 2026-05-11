@@ -352,6 +352,7 @@ await server.register(async function(app) {
   await app.register(require('./routes/restaurant'),  { prefix: '/restaurant' })
   await app.register(require('./routes/facturation.route'), { prefix: '/facturation' })
   await app.register(require('./routes/analytics'),   { prefix: '/analytics' })
+  await app.register(require('./routes/kpi.route'),       { prefix: '/kpi' })
   await app.register(require('./routes/ai'),          { prefix: '/ai' })
   await app.register(require('./routes/ia.route'), { prefix: '/ia' })
   await app.register(require('./routes/uploads'),     { prefix: '/uploads' })

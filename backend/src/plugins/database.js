@@ -184,7 +184,7 @@ async function databasePlugin(fastify) {
     await Promise.race([
       knex.raw('SELECT 1'),
       new Promise((_, rej) =>
-        setTimeout(() => rej(new Error('Timeout DB (2500ms)')), 2500)
+        setTimeout(() => rej(new Error('Timeout DB (15000ms)')), 15000)
       )
     ])
     fastify.log.info({ mode, ssl: !!connection.ssl }, '✅ PostgreSQL connecté')

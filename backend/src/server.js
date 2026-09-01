@@ -133,6 +133,7 @@ const server = Fastify({
   connectionTimeout: 30000,    // Ferme les connexions inactives après 30s
   keepAliveTimeout: 5000,      // Libère les connexions keep-alive après 5s
   requestTimeout: 60000,       // Timeout par requête — généreux pour contexte africain
+  pluginTimeout: 30000,        // Laisse 30s aux plugins (DB cold start Railway)
 })
 
 // ── Plugins ───────────────────────────────────────────────────────────
@@ -343,7 +344,7 @@ await server.register(async function(app) {
   await app.register(require('./routes/tenants'),      { prefix: '/tenants' })
   await app.register(require('./routes/hotels'),       { prefix: '/hotels' })
   await app.register(require('./routes/utilisateurs'), { prefix: '/utilisateurs' })
-  await app.register(require('./routes/chambres'),     { prefix: '/chambres' })
+  await app.register(require('./routes/chambres.route'), { prefix: '/chambres' })
   await app.register(require('./routes/clients'),      { prefix: '/clients' })
 
   await app.register(require('./routes/reservations.route'), { prefix: '/reservations' })
@@ -356,12 +357,17 @@ await server.register(async function(app) {
   await app.register(require('./routes/kpi.route'),       { prefix: '/kpi' })
   await app.register(require('./routes/ai'),          { prefix: '/ai' })
   await app.register(require('./routes/ia.route'), { prefix: '/ia' })
+  await app.register(require('./routes/reporting'),  { prefix: '/reporting' })
   await app.register(require('./routes/uploads'),     { prefix: '/uploads' })
 
   // ✅ NOUVEAU PORTAIL (remplace portail-chambre + portail-client)
   await app.register(require('./routes/portail.route'), { prefix: '/portail' })
 
+  // ✅ ESPACE CLIENT connecté (app web /client-portal — JWT type:'client')
+  await app.register(require('./routes/portail-client.route'), { prefix: '/client' })
+
   await app.register(require('./routes/booking'), { prefix: '/booking' })
+  await app.register(require('./routes/paiement-online.route'), { prefix: '/paiement-online' })
 
   // ─────────────────────────────────────────────────────────────────
   // Route /seed désactivée en production

@@ -52,6 +52,33 @@ api.interceptors.response.use(
   }
 )
 
+// ── Instance client (portail client connecté — token 7vh_client_token) ───────
+// Distincte de l'instance staff pour ne pas mélanger les JWT.
+const clientApi = axios.create({
+  baseURL: API_URL,
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' }
+})
+
+clientApi.interceptors.request.use((config) => {
+  if (typeof window !== 'undefined') {
+    const token = localStorage.getItem('7vh_client_token')
+    if (token) config.headers['Authorization'] = `Bearer ${token}`
+  }
+  return config
+})
+
+clientApi.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401 && typeof window !== 'undefined') {
+      localStorage.removeItem('7vh_client_token')
+      window.location.href = '/client-portal/connexion'
+    }
+    return Promise.reject(error)
+  }
+)
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 export const authAPI = {
@@ -108,6 +135,7 @@ export const restaurantAPI = {
   cuisine:        ()      => api.get('/restaurant/cuisine'),
   creerCommande:  (data)  => api.post('/restaurant/commandes', data),
   changerStatut:  (id, d) => api.put(`/restaurant/commandes/${id}/statut`, d),
+  creerArticle:   (data)  => api.post('/restaurant/articles', data),
 }
 
 export const facturationAPI = {
@@ -150,10 +178,19 @@ export const bookingAPI = {
 }
 
 export const portailClientAPI = {
-  reservations: ()     => api.get('/client/reservations'),
-  factures:     ()     => api.get('/client/factures'),
-  profil:       ()     => api.get('/client/profil'),
-  modifierProfil:(d)   => api.put('/client/profil', d),
+  reservations: ()     => clientApi.get('/client/reservations'),
+  factures:     ()     => clientApi.get('/client/factures'),
+  profil:       ()     => clientApi.get('/client/profil'),
+  modifierProfil:(d)   => clientApi.put('/client/profil', d),
+  folio:        (id)   => clientApi.get(`/client/reservations/${id}/folio`),
+}
+
+export const portailInboxAPI = {
+  inbox:        ()                      => api.get('/portail/inbox'),
+  messages:     (reservationId)         => api.get(`/portail/inbox/${reservationId}`),
+  reply:        (reservationId, corps)  => api.post(`/portail/inbox/${reservationId}/reply`, { corps }),
+  appels:       ()                      => api.get('/portail/appels'),
+  traiterAppel: (id)                    => api.put(`/portail/appels/${id}/traiter`),
 }
 
 export const hotelsAPI = {

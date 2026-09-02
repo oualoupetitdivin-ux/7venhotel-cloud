@@ -22,14 +22,15 @@ const {
 // ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = async function reservationsRoutes(fastify) {
-  const pre = [fastify.authentifier, fastify.contexteHotel]
+  const pre     = [fastify.authentifier, fastify.contexteHotel]
+  const preRead = [...pre, fastify.verifierPermission('reservations.lire')]
 
   // Service instancié une fois à l'enregistrement — injection des dépendances
   const service = createReservationsService({ db: fastify.db, cache: fastify.cache })
 
   // ── GET / — Liste des réservations ────────────────────────────────────────
   // Conservé inline — sera migré vers service.lister() dans l'itération suivante
-  fastify.get('/', { preHandler: pre }, async (request, reply) => {
+  fastify.get('/', { preHandler: preRead }, async (request, reply) => {
     const { statut, date_debut, date_fin, chambre_id, page = 1, limite = 50 } = request.query
 
     const cacheKey = `reservations:${request.hotelId}:${JSON.stringify(request.query)}`
@@ -79,7 +80,7 @@ module.exports = async function reservationsRoutes(fastify) {
   })
 
   // ── GET /timeline ─────────────────────────────────────────────────────────
-  fastify.get('/timeline', { preHandler: pre }, async (request, reply) => {
+  fastify.get('/timeline', { preHandler: preRead }, async (request, reply) => {
     const { debut, fin } = request.query
     const dateDebut = debut || new Date().toISOString().split('T')[0]
     const dateFin   = fin   || new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
@@ -116,8 +117,115 @@ module.exports = async function reservationsRoutes(fastify) {
     return reply.send(result)
   })
 
+  // ── GET /alertes — Alertes opérationnelles déterministes ────────────────
+  // Règles SQL pures — sans IA, sans alertes_ia. Recalculées à chaque appel.
+  // Rule 1 : confirmée + date_arrivee = aujourd'hui + heure >= 14h → check-in en retard
+  // Rule 2 : tentative créée > 4h → paiement bloqué
+  fastify.get('/alertes', { preHandler: preRead }, async (request, reply) => {
+    const now   = new Date()
+    const today = now.toISOString().split('T')[0]
+    const alertes = []
+
+    if (now.getHours() >= 14) {
+      const retards = await fastify.db('reservations AS r')
+        .leftJoin('clients AS c', 'c.id', 'r.client_id')
+        .where({ 'r.hotel_id': request.hotelId, 'r.statut': 'confirmee' })
+        .whereRaw("r.date_arrivee::date = ?::date", [today])
+        .leftJoin('chambres AS ch', 'ch.id', 'r.chambre_id')
+        .select(
+          'r.id', 'r.numero_reservation', 'ch.numero AS numero_chambre',
+          fastify.db.raw("COALESCE(c.prenom || ' ' || c.nom, 'Client inconnu') AS nom_client")
+        )
+
+      retards.forEach(r => alertes.push({
+        id:       `checkin-retard-${r.id}`,
+        type:     'operationnelle',
+        severite: 'critique',
+        titre:    `Check-in en retard : ${r.nom_client}`,
+        message:  `Ch. ${r.numero_chambre || '?'} · ${r.numero_reservation}`,
+      }))
+    }
+
+    const tentatives = await fastify.db('reservations AS r')
+      .leftJoin('clients AS c', 'c.id', 'r.client_id')
+      .where({ 'r.hotel_id': request.hotelId, 'r.statut': 'tentative' })
+      .whereRaw("r.cree_le < NOW() - INTERVAL '4 hours'")
+      .select(
+        'r.id', 'r.numero_reservation',
+        fastify.db.raw("COALESCE(c.prenom || ' ' || c.nom, 'Client inconnu') AS nom_client"),
+        fastify.db.raw("ROUND(EXTRACT(EPOCH FROM (NOW() - r.cree_le))/3600)::int AS heures_depuis")
+      )
+
+    tentatives.forEach(r => alertes.push({
+      id:       `paiement-attente-${r.id}`,
+      type:     'operationnelle',
+      severite: 'avertissement',
+      titre:    `Paiement bloqué depuis ${r.heures_depuis}h : ${r.nom_client}`,
+      message:  `Réservation tentative ${r.numero_reservation}`,
+    }))
+
+    // Rule 3: arrivée dont date_depart <= aujourd'hui → checkout à effectuer
+    const departsAttente = await fastify.db('reservations AS r')
+      .leftJoin('clients AS c', 'c.id', 'r.client_id')
+      .leftJoin('chambres AS ch', 'ch.id', 'r.chambre_id')
+      .where({ 'r.hotel_id': request.hotelId, 'r.statut': 'arrivee' })
+      .whereRaw('r.date_depart::date <= CURRENT_DATE')
+      .select(
+        'r.id', 'r.numero_reservation', 'ch.numero AS numero_chambre',
+        fastify.db.raw("COALESCE(c.prenom || ' ' || c.nom, 'Client inconnu') AS nom_client")
+      )
+
+    departsAttente.forEach(r => alertes.push({
+      id:       `depart-attente-${r.id}`,
+      type:     'operationnelle',
+      severite: 'critique',
+      titre:    `Départ à traiter : ${r.nom_client}`,
+      message:  `Ch. ${r.numero_chambre || '?'} · ${r.numero_reservation}`,
+    }))
+
+    // Rule 4: chambres en statut 'sale' (post-checkout, ménage en attente)
+    const chambresSales = await fastify.db('chambres')
+      .where({ hotel_id: request.hotelId, statut: 'sale' })
+      .select('id', 'numero')
+
+    if (chambresSales.length > 0) {
+      const nums = chambresSales.slice(0, 5).map(c => c.numero).join(', ')
+      alertes.push({
+        id:       `chambres-sales-${today}`,
+        type:     'operationnelle',
+        severite: chambresSales.length >= 3 ? 'critique' : 'avertissement',
+        titre:    `${chambresSales.length} chambre${chambresSales.length > 1 ? 's' : ''} à nettoyer`,
+        message:  `Ch. ${nums}${chambresSales.length > 5 ? '…' : ''}`,
+      })
+    }
+
+    // Rule 5: nouvelles réservations en ligne récentes (< 4h) → signal à la réception
+    const resasRecentes = await fastify.db('reservations AS r')
+      .leftJoin('clients AS c', 'c.id', 'r.client_id')
+      .where({ 'r.hotel_id': request.hotelId, 'r.statut': 'tentative' })
+      .whereRaw("r.cree_le >= NOW() - INTERVAL '4 hours'")
+      .select(
+        'r.id', 'r.numero_reservation',
+        fastify.db.raw("COALESCE(c.prenom || ' ' || c.nom, 'Client') AS nom_client"),
+        fastify.db.raw("ROUND(EXTRACT(EPOCH FROM (NOW() - r.cree_le))/60)::int AS minutes_depuis")
+      )
+    resasRecentes.forEach(r => {
+      const mins = r.minutes_depuis || 0
+      const duree = mins < 60 ? `${mins}min` : `${Math.floor(mins/60)}h${String(mins % 60).padStart(2,'0')}`
+      alertes.push({
+        id:       `resa-online-${r.id}`,
+        type:     'operationnelle',
+        severite: 'info',
+        titre:    `Réservation en ligne : ${r.nom_client}`,
+        message:  `${r.numero_reservation} · il y a ${duree} — en attente de paiement`,
+      })
+    })
+
+    return reply.send({ alertes })
+  })
+
   // ── GET /:id ──────────────────────────────────────────────────────────────
-  fastify.get('/:id', { preHandler: pre }, async (request, reply) => {
+  fastify.get('/:id', { preHandler: preRead }, async (request, reply) => {
     const reservation = await service.getParId(request.params.id, request.hotelId)
     return reply.send({ reservation })
   })
@@ -214,6 +322,7 @@ module.exports = async function reservationsRoutes(fastify) {
     return reply.send({
       message:      'Check-out effectué — chambre en cours de nettoyage',
       tache_menage: resultat.tache_menage,
+      facture:      resultat.facture || null,
     })
   })
 

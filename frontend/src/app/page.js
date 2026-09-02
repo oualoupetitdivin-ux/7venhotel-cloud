@@ -1,26 +1,23 @@
 'use client'
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { resolvePostLoginDestination } from '@/lib/utils'
 
 export default function HomePage() {
   const router = useRouter()
 
   useEffect(() => {
-    const token = localStorage.getItem('7vh_token')
-    const user  = JSON.parse(localStorage.getItem('7vh_user') || 'null')
+    try {
+      const token = localStorage.getItem('7vh_token')
+      const user  = JSON.parse(localStorage.getItem('7vh_user')  || 'null')
+      const hotel = JSON.parse(localStorage.getItem('7vh_hotel') || 'null')
 
-    if (token && user) {
-      const redirects = {
-        super_admin:  '/dashboard',
-        manager:      '/dashboard',
-        reception:    '/dashboard',
-        housekeeping: '/menage',
-        restaurant:   '/restaurant',
-        comptabilite: '/facturation',
-        technicien:   '/maintenance'
+      if (token && user) {
+        router.replace(resolvePostLoginDestination(user, hotel))
+      } else {
+        router.replace('/auth/connexion')
       }
-      router.replace(redirects[user.role] || '/dashboard')
-    } else {
+    } catch {
       router.replace('/auth/connexion')
     }
   }, [router])

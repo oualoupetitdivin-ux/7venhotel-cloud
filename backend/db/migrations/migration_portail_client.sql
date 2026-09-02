@@ -38,8 +38,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_hotel_non_lu
   WHERE lu = FALSE;
 
 -- ── 3. Table demandes_service ────────────────────────────────────────────────
-CREATE TYPE IF NOT EXISTS statut_demande AS ENUM
-  ('nouvelle', 'en_cours', 'traitee', 'annulee');
+DO $$ BEGIN
+  CREATE TYPE statut_demande AS ENUM ('nouvelle', 'en_cours', 'traitee', 'annulee');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE TABLE IF NOT EXISTS demandes_service (
   id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

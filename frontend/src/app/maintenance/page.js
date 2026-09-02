@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 import { useState, useEffect } from 'react'
 import AppLayout from '@/components/layout/AppLayout'
 import { maintenanceAPI } from '@/lib/api'
@@ -55,10 +55,10 @@ export default function MaintenancePage() {
       <div className="space-y-5">
         {/* KPIs */}
         <div className="grid grid-cols-4 gap-3">
-          <div className="kpi-card border-b-2 border-blue-500"><div className="kpi-label">Total</div><div className="kpi-value">{total}</div></div>
-          <div className="kpi-card border-b-2 border-red-500"><div className="kpi-label">Urgents</div><div className="kpi-value text-red-400">{urgents}</div></div>
-          <div className="kpi-card border-b-2 border-amber-500"><div className="kpi-label">Ouverts</div><div className="kpi-value text-amber-400">{tickets.filter(t=>t.statut==='ouvert').length}</div></div>
-          <div className="kpi-card border-b-2 border-emerald-500"><div className="kpi-label">Résolus</div><div className="kpi-value text-emerald-400">{tickets.filter(t=>t.statut==='resolu').length}</div></div>
+          <div className="kpi-card"><div className="kpi-label">Total</div><div className="kpi-value">{total}</div></div>
+          <div className="kpi-card"><div className="kpi-label">Urgents</div><div className="kpi-value text-red-400">{urgents}</div></div>
+          <div className="kpi-card"><div className="kpi-label">Ouverts</div><div className="kpi-value text-amber-400">{tickets.filter(t=>t.statut==='ouvert').length}</div></div>
+          <div className="kpi-card"><div className="kpi-label">Résolus</div><div className="kpi-value text-emerald-400">{tickets.filter(t=>t.statut==='resolu').length}</div></div>
         </div>
 
         {/* Filtres */}
@@ -116,8 +116,8 @@ export default function MaintenancePage() {
         {/* Liste */}
         <div className="card overflow-hidden">
           {loading ? (
-            <div className="flex items-center justify-center h-40">
-              <div className="w-7 h-7 border-2 border-[var(--border-1)] border-t-blue-500 rounded-full animate-spin" />
+            <div className="p-4 space-y-2">
+              {[...Array(5)].map((_,i) => <div key={i} className="skeleton h-10 rounded-lg" />)}
             </div>
           ) : tickets.length === 0 ? (
             <div className="p-10 text-center text-xs text-[var(--text-3)]">

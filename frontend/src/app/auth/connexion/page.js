@@ -3,15 +3,15 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
 import { authAPI } from '@/lib/api'
-import { useAuthStore } from '@/lib/utils'
+import { useAuthStore, resolvePostLoginDestination } from '@/lib/utils'
 
 const COMPTES_DEMO = [
-  { email: 'superadmin@demo.com', role: 'Super Admin',   couleur: '#8B5CF6', icone: '⚙' },
-  { email: 'manager@demo.com',    role: 'Manager',        couleur: '#3B82F6', icone: '🏨' },
-  { email: 'reception@demo.com',  role: 'Réception',      couleur: '#10B981', icone: '🔑' },
-  { email: 'housekeeping@demo.com',role: 'Housekeeping',  couleur: '#F59E0B', icone: '🧹' },
-  { email: 'restaurant@demo.com', role: 'Restaurant',     couleur: '#F97316', icone: '🍽' },
-  { email: 'accounting@demo.com', role: 'Comptabilité',   couleur: '#06B6D4', icone: '💳' },
+  { email: 'superadmin@demo.com',   mdp: 'Admin2026!', role: 'Super Admin',  couleur: '#8B5CF6', icone: '⚙' },
+  { email: 'manager@demo.com',      mdp: 'Demo2024!',  role: 'Manager',       couleur: '#3B82F6', icone: '🏨' },
+  { email: 'reception@demo.com',    mdp: 'Demo2024!',  role: 'Réception',     couleur: '#10B981', icone: '🔑' },
+  { email: 'housekeeping@demo.com', mdp: 'Demo2024!',  role: 'Housekeeping',  couleur: '#F59E0B', icone: '🧹' },
+  { email: 'restaurant@demo.com',   mdp: 'Demo2024!',  role: 'Restaurant',    couleur: '#F97316', icone: '🍽' },
+  { email: 'accounting@demo.com',   mdp: 'Demo2024!',  role: 'Comptabilité',  couleur: '#06B6D4', icone: '💳' },
 ]
 
 export default function ConnexionPage() {
@@ -23,8 +23,14 @@ export default function ConnexionPage() {
   const [erreur, setErreur]  = useState('')
 
   useEffect(() => {
-    const token = localStorage.getItem('7vh_token')
-    if (token) router.replace('/dashboard')
+    try {
+      const token = localStorage.getItem('7vh_token')
+      const user  = JSON.parse(localStorage.getItem('7vh_user')  || 'null')
+      const hotel = JSON.parse(localStorage.getItem('7vh_hotel') || 'null')
+      if (token && user) router.replace(resolvePostLoginDestination(user, hotel))
+    } catch {
+      // localStorage corrompu — rester sur la page de connexion
+    }
   }, [router])
 
   async function handleSubmit(e) {
@@ -35,18 +41,14 @@ export default function ConnexionPage() {
       const { data } = await authAPI.connexion({ email, mot_de_passe: mdp })
       setSession(data)
       toast.success(`Bienvenue, ${data.utilisateur.prenom} !`)
-      const redirects = {
-        super_admin:'dashboard', manager:'dashboard', reception:'dashboard',
-        housekeeping:'menage', restaurant:'restaurant', comptabilite:'facturation', technicien:'maintenance'
-      }
-      router.push('/' + (redirects[data.utilisateur.role] || 'dashboard'))
+      router.push(resolvePostLoginDestination(data.utilisateur, data.hotel))
     } catch (err) {
       setErreur(err.response?.data?.erreur || 'Identifiants incorrects')
     } finally { setLoading(false) }
   }
 
-  function remplirDemo(demoEmail) {
-    setEmail(demoEmail); setMdp('demo123'); setErreur('')
+  function remplirDemo(compte) {
+    setEmail(compte.email); setMdp(compte.mdp); setErreur('')
   }
 
   return (
@@ -106,7 +108,7 @@ export default function ConnexionPage() {
             <div className="text-[9.5px] font-bold uppercase tracking-widest text-[var(--text-3)] mb-2">🚀 Comptes démo</div>
             <div className="space-y-0.5">
               {COMPTES_DEMO.map(d => (
-                <button key={d.email} onClick={() => remplirDemo(d.email)}
+                <button key={d.email} onClick={() => remplirDemo(d)}
                   className="w-full flex items-center gap-2 p-1.5 rounded-lg hover:bg-[var(--bg-3)] transition-colors text-left">
                   <span className="text-sm">{d.icone}</span>
                   <div className="flex-1 min-w-0">
@@ -154,7 +156,7 @@ export default function ConnexionPage() {
           </form>
 
           <p className="text-center mt-4 text-[10.5px] text-[var(--text-3)]">
-            Mot de passe démo : <code className="bg-[var(--bg-3)] px-1.5 py-0.5 rounded font-mono">demo123</code>
+            Cliquez un compte pour remplir automatiquement
           </p>
           <div className="flex items-center justify-center gap-3 mt-4 text-[10.5px] text-[var(--text-4)]">
             <a href="/booking" className="hover:text-[var(--text-2)]">Réserver en ligne</a>

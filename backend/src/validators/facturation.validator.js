@@ -5,13 +5,16 @@
 // Aucune règle métier, aucune requête DB
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Valeurs ENUM type_ligne_ledger (migration_facturation_folio.sql)
+// Valeurs ENUM type_extra_folio acceptées via l'API manuelle (POST /facturation/ligne)
+// Alignées sur migration_fiscal_p0.sql — tout l'ENUM sauf 'paiement' et 'correction'
+// qui sont réservés au système (creerPaiement / corrigerLigne).
 const TYPES_LIGNE_MANUELS = [
-  'restaurant', 'minibar', 'service', 'telephone',
-  'ajustement', 'taxe', 'transfert_folio',
+  'hebergement',
+  'restaurant', 'bar', 'spa', 'blanchisserie', 'transport', 'telephone', 'minibar',
+  'taxe', 'remise', 'autre',
 ]
-// 'nuitee', 'paiement', 'remboursement', 'correction', 'acompte'
-// → générés uniquement par le système, jamais par l'API manuelle
+// 'paiement'   → généré uniquement par service.creerPaiement()
+// 'correction' → généré uniquement par service.corrigerLigne()
 
 // Valeurs ENUM type_paiement (schéma original)
 const TYPES_PAIEMENT = ['carte', 'especes', 'chambre', 'virement', 'mobile_money']
@@ -90,8 +93,7 @@ function validerConfirmationPaiement(body) {
   if (!body.paiement_id || !estUUID(body.paiement_id))
     erreurs.push(err('paiement_id', 'UUID valide requis'))
 
-  if (!body.reference_externe || !body.reference_externe.toString().trim())
-    erreurs.push(err('reference_externe', 'requis — identifiant de transaction opérateur'))
+  // reference_externe optionnelle pour confirmation manuelle (opérateur non requis)
 
   return erreurs.length ? { ok: false, erreurs } : { ok: true }
 }

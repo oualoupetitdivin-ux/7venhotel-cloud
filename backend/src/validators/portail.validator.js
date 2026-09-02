@@ -7,7 +7,11 @@
 // Retourne { ok: true } ou { ok: false, erreurs: [{ champ, message }] }
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TYPES_SERVICE_VALIDES = ['menage', 'roomservice', 'maintenance', 'autre']
+const TYPES_SERVICE_VALIDES = [
+  'menage', 'roomservice', 'room_service', 'maintenance', 'autre',
+  'serviettes', 'oreillers', 'glacons', 'taxi', 'premiers_soins',
+  'menage_complet', 'faire_lit', 'turndown', 'appel_reception',
+]
 
 function err(champ, message) { return { champ, message } }
 

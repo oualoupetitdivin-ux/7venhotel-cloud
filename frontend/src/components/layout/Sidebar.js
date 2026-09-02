@@ -12,6 +12,7 @@ const MENUS_PAR_ROLE = {
       { key: '/tenants',    icone: '🏢', label: 'Tenants' },
       { key: '/staff',      icone: '👥', label: 'Personnel' },
       { key: '/analytics',  icone: '📊', label: 'Analytique' },
+      { key: '/reporting',  icone: '📰', label: 'Reporting' },
       { key: '/settings',   icone: '⚙', label: 'Paramètres' },
       { key: '/ai',         icone: '🤖', label: 'Ouwalou AI' },
     ]}
@@ -19,7 +20,8 @@ const MENUS_PAR_ROLE = {
   manager: [
     { groupe: 'Opérations', items: [
       { key: '/dashboard',    icone: '⊞', label: 'Tableau de bord' },
-      { key: '/reservations', icone: '📋', label: 'Réservations', badge: 'new' },
+      { key: '/reservations',    icone: '📋', label: 'Réservations', badge: 'new' },
+      { key: '/messages-portail',icone: '📨', label: 'Messages portail' },
       { key: '/timeline',     icone: '▦', label: 'Planning' },
       { key: '/chambres',     icone: '🛏', label: 'Chambres' },
       { key: '/menage',       icone: '🧹', label: 'Ménage' },
@@ -31,6 +33,7 @@ const MENUS_PAR_ROLE = {
       { key: '/clients',    icone: '👥', label: 'Clients' },
       { key: '/facturation',icone: '💳', label: 'Facturation' },
       { key: '/analytics',  icone: '📊', label: 'Analytique' },
+      { key: '/reporting',  icone: '📰', label: 'Reporting' },
     ]},
     { groupe: 'IA & Config', items: [
       { key: '/ai',       icone: '🤖', label: 'Ouwalou AI' },
@@ -41,9 +44,10 @@ const MENUS_PAR_ROLE = {
   reception: [
     { groupe: 'Réception', items: [
       { key: '/dashboard',    icone: '⊞', label: 'Tableau de bord' },
-      { key: '/reservations', icone: '📋', label: 'Réservations' },
-      { key: '/timeline',     icone: '▦', label: 'Planning' },
-      { key: '/clients',      icone: '👥', label: 'Clients' },
+      { key: '/reservations',    icone: '📋', label: 'Réservations' },
+      { key: '/timeline',        icone: '▦', label: 'Planning' },
+      { key: '/clients',         icone: '👥', label: 'Clients' },
+      { key: '/messages-portail',icone: '📨', label: 'Messages portail' },
     ]}
   ],
   housekeeping: [

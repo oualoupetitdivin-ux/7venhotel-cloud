@@ -106,6 +106,7 @@ function createPortailRepository(db) {
           'ch.etage AS etage_chambre',
           'tc.nom AS type_chambre',
           'h.nom AS nom_hotel',
+          'h.ville AS ville_hotel',
           'h.adresse AS adresse_hotel',
           'h.telephone AS telephone_hotel'
         )

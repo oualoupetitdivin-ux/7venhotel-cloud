@@ -8,7 +8,12 @@
 module.exports = async function authRoutes(fastify) {
 
   // ── POST /auth/connexion ──────────────────────────────────────────
-  fastify.post('/connexion', async (request, reply) => {
+  // Rate limit strict : 10 tentatives / 15 min par IP (anti brute-force)
+  fastify.post('/connexion', {
+    config: {
+      rateLimit: { max: 10, timeWindow: '15 minutes', keyGenerator: (req) => req.ip }
+    }
+  }, async (request, reply) => {
     const { email, mot_de_passe } = request.body || {}
 
     if (!email || !mot_de_passe) {
@@ -39,10 +44,13 @@ module.exports = async function authRoutes(fastify) {
       derniere_connexion: fastify.db.fn.now()
     })
 
-    const token = fastify.genererToken(user)
+    const token        = fastify.genererToken(user)
     const tokenRefresh = fastify.genererTokenRafraichissement(user)
 
     await fastify.cache.set(`refresh:${user.id}`, tokenRefresh, 7 * 24 * 3600)
+
+    // Créer la session révocable (Redis + DB) — non-bloquant si échoue
+    await fastify.creerSession(user, token, request.ip, request.headers['user-agent'])
 
     const hotel = user.hotel_id ? await fastify.db('hotels')
       .where({ id: user.hotel_id })
@@ -54,26 +62,29 @@ module.exports = async function authRoutes(fastify) {
       .select('devise', 'fuseau_horaire', 'langue')
       .first() : null
 
+    request.log.info({ user_id: user.id, role: user.role }, 'CONNEXION réussie')
+
     reply.send({
       token,
       token_rafraichissement: tokenRefresh,
       utilisateur: {
-        id:        user.id,
-        email:     user.email,
-        prenom:    user.prenom,
-        nom:       user.nom,
-        role:      user.role,
-        avatar_url:user.avatar_url,
-        hotel_id:  user.hotel_id,
-        tenant_id: user.tenant_id
+        id:               user.id,
+        email:            user.email,
+        prenom:           user.prenom,
+        nom:              user.nom,
+        role:             user.role,
+        avatar_url:       user.avatar_url,
+        hotel_id:         user.hotel_id,
+        tenant_id:        user.tenant_id,
+        doit_changer_mdp: user.doit_changer_mdp === true,
       },
       hotel: hotel ? {
         id:            hotel.id,
         nom:           hotel.nom,
         devise:        paramsHotel?.devise || 'XAF',
         fuseau_horaire:paramsHotel?.fuseau_horaire || 'Africa/Douala',
-        langue:        paramsHotel?.langue || 'fr'
-      } : null
+        langue:        paramsHotel?.langue || 'fr',
+      } : null,
     })
   })
 
@@ -87,7 +98,10 @@ module.exports = async function authRoutes(fastify) {
       const payload = fastify.jwt.verify(token_rafraichissement, { key: process.env.JWT_REFRESH_SECRET })
       const user = await fastify.db('utilisateurs').where({ id: payload.id, actif: true }).first()
       if (!user) return reply.status(401).send({ erreur: 'Utilisateur introuvable' })
-      reply.send({ token: fastify.genererToken(user) })
+      const newToken = fastify.genererToken(user)
+      // Créer la session révocable pour le nouveau token (même logique que le login)
+      await fastify.creerSession(user, newToken, request.ip, request.headers['user-agent'])
+      reply.send({ token: newToken })
     } catch {
       return reply.status(401).send({ erreur: 'Token de rafraîchissement invalide' })
     }
@@ -106,6 +120,13 @@ module.exports = async function authRoutes(fastify) {
   // ── POST /auth/deconnexion ────────────────────────────────────────
   fastify.post('/deconnexion', { preHandler: [fastify.authentifier] }, async (request, reply) => {
     await fastify.cache.del(`refresh:${request.user.id}`)
+
+    // Révoquer la session individuelle (Redis + DB)
+    if (request.user.jti) {
+      await fastify.revoquerSession(request.user.jti, request.user.tenant_id)
+    }
+
+    request.log.info({ user_id: request.user.id }, 'DECONNEXION')
     reply.send({ message: 'Déconnecté avec succès' })
   })
 
@@ -122,7 +143,10 @@ module.exports = async function authRoutes(fastify) {
     const valide = await fastify.verifierMotDePasse(ancien_mdp, user.mot_de_passe_hash)
     if (!valide) return reply.status(401).send({ erreur: 'Ancien mot de passe incorrect' })
     const hash = await fastify.hashMotDePasse(nouveau_mdp)
-    await fastify.db('utilisateurs').where({ id: user.id }).update({ mot_de_passe_hash: hash })
+    await fastify.db('utilisateurs').where({ id: user.id }).update({
+      mot_de_passe_hash: hash,
+      doit_changer_mdp:  false,
+    })
     reply.send({ message: 'Mot de passe mis à jour avec succès' })
   })
 
@@ -132,7 +156,12 @@ module.exports = async function authRoutes(fastify) {
     if (!email || !mot_de_passe) {
       return reply.status(400).send({ erreur: 'Email et mot de passe requis' })
     }
-    const client = await fastify.db('clients').where({ email }).where('actif', true).first()
+    const client = await fastify.db('clients AS c')
+      .leftJoin('hotels AS h', 'h.id', 'c.hotel_id')
+      .where({ 'c.email': email })
+      .where('c.actif', true)
+      .select('c.*', 'h.slug AS hotel_slug')
+      .first()
     if (!client || !client.mot_de_passe_hash) {
       return reply.status(401).send({ erreur: 'Identifiants incorrects' })
     }
@@ -142,13 +171,14 @@ module.exports = async function authRoutes(fastify) {
     const token = fastify.jwt.sign({
       id: client.id, email: client.email, prenom: client.prenom, nom: client.nom,
       type: 'client', hotel_id: client.hotel_id, tenant_id: client.tenant_id
-    }, { expiresIn: '30d' })
+    }, { expiresIn: process.env.JWT_CLIENT_EXPIRES_IN || '24h' })
     reply.send({
       token,
       client: {
         id: client.id, prenom: client.prenom, nom: client.nom, email: client.email,
         segment: client.segment, points_fidelite: client.points_fidelite,
-        niveau_fidelite: client.niveau_fidelite
+        niveau_fidelite: client.niveau_fidelite,
+        hotel_slug: client.hotel_slug
       }
     })
   })

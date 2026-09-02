@@ -7,7 +7,7 @@
 // hotel_id obligatoire sur toute requête scopée.
 // conn(trx) : utilise la transaction si fournie, sinon db global.
 //
-// Tables : folios, folio_lignes, paiements, logs_financiers
+// Tables : folios, lignes_folio, paiements, logs_financiers
 // Fonction SQL : get_solde_folio(folio_id, hotel_id)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ function createFacturationRepository(db) {
         .select(
           'f.id', 'f.hotel_id', 'f.reservation_id', 'f.client_id',
           'f.statut', 'f.devise', 'f.numero_folio', 'f.folio_parent_id',
-          'f.ouvert_le', 'f.cloture_le', 'f.notes',
+          db.raw('f.cree_le AS ouvert_le'), 'f.cloture_le',
           db.raw("c.prenom || ' ' || c.nom AS nom_client"),
           'c.email AS email_client'
         )
@@ -67,6 +67,24 @@ function createFacturationRepository(db) {
         .first() ?? null
     },
 
+    // Créer un folio vide lié à une réservation
+    // Doit être appelé DANS la transaction de creerReservation — atomicité obligatoire.
+    // trx est obligatoire (pas de folio orphelin possible en cas de rollback).
+    async creerFolio(champs, trx) {
+      const c = conn(trx)
+      const [folio] = await c('folios')
+        .insert({
+          reservation_id: champs.reservation_id,
+          hotel_id:       champs.hotel_id,
+          client_id:      champs.client_id   || null,
+          numero_folio:   champs.numero_folio,
+          devise:         champs.devise       || 'XAF',
+          statut:         'ouvert',
+        })
+        .returning('*')
+      return folio
+    },
+
     // Mettre à jour le statut du folio (checkout, litige)
     async mettreAJourStatutFolio(folioId, hotelId, champs, trx) {
       const c = conn(trx)
@@ -81,12 +99,12 @@ function createFacturationRepository(db) {
 
     // Lister les lignes d'un folio (scope double)
     async listerLignes(folioId, hotelId, trx) {
-      return conn(trx)('folio_lignes AS fl')
+      return conn(trx)('lignes_folio AS fl')
         .leftJoin('utilisateurs AS u', 'u.id', 'fl.cree_par')
         .where({ 'fl.folio_id': folioId, 'fl.hotel_id': hotelId })
         .select(
-          'fl.id', 'fl.type_ligne', 'fl.sens', 'fl.montant', 'fl.devise',
-          'fl.description', 'fl.date_nuitee', 'fl.reference_id', 'fl.reference_type',
+          'fl.id', 'fl.type_ligne', 'fl.sens', db.raw('fl.montant_total AS montant'), 'fl.devise',
+          'fl.description', 'fl.date_facturation', 'fl.reference_id', 'fl.reference_type',
           'fl.source_module', 'fl.ligne_corrigee_id',
           'fl.cree_par_type', 'fl.cree_le', 'fl.metadata',
           db.raw("u.prenom || ' ' || u.nom AS cree_par_nom")
@@ -96,22 +114,33 @@ function createFacturationRepository(db) {
 
     // Trouver une ligne par id (scope double via folio)
     async trouverLigneParId(ligneId, hotelId, trx) {
-      return conn(trx)('folio_lignes AS fl')
+      return conn(trx)('lignes_folio AS fl')
         .join('folios AS f', function() {
           this.on('f.id', '=', 'fl.folio_id')
               .andOn('f.hotel_id', '=', conn(trx).raw('?', [hotelId]))
         })
         .where({ 'fl.id': ligneId })
-        .select('fl.*', 'f.statut AS folio_statut', 'f.hotel_id AS folio_hotel_id')
+        .select(
+          'fl.*',
+          db.raw('fl.montant_total AS montant'),
+          'f.statut AS folio_statut',
+          'f.hotel_id AS folio_hotel_id',
+          'f.reservation_id AS folio_reservation_id'
+        )
         .first() ?? null
     },
 
     // Insérer une ligne (INSERT seul — jamais UPDATE/DELETE, enforced par trigger DB)
+    // Mapping : champs.montant (interface service) → montant_total (colonne DB)
+    //           champs.prix_unitaire : optionnel — défaut = montant (quantite=1)
+    // L'objet retourné expose .montant pour compatibilité avec le service.
     async insererLigne(champs, trx) {
       const c = conn(trx)
-      const [ligne] = await c('folio_lignes')
-        .insert({ ...champs, cree_le: c.fn.now() })
+      const { montant, ...rest } = champs
+      const [ligne] = await c('lignes_folio')
+        .insert({ prix_unitaire: montant, ...rest, montant_total: montant, cree_le: c.fn.now() })
         .returning('*')
+      if (ligne) ligne.montant = ligne.montant_total
       return ligne
     },
 
@@ -146,8 +175,11 @@ function createFacturationRepository(db) {
 
     // Vérifier si une reference_externe existe déjà (anti-doublon mobile money)
     async referenceExterneExiste(referenceExterne, hotelId, trx) {
+      // Idempotence réelle : la référence est déjà connue ET le paiement est confirmé.
+      // Une référence sur un paiement en_attente (stockée à l'initiation MoMo) n'est
+      // pas encore traitée — ne pas la traiter comme idempotente.
       const row = await conn(trx)('paiements')
-        .where({ reference_externe: referenceExterne, hotel_id: hotelId })
+        .where({ reference_externe: referenceExterne, hotel_id: hotelId, statut: 'valide' })
         .first()
       return !!row
     },
@@ -161,7 +193,7 @@ function createFacturationRepository(db) {
         .first() ?? null
     },
 
-    // Confirmer un paiement (UPDATE autorisé sur paiements — pas sur folio_lignes)
+    // Confirmer un paiement (UPDATE autorisé sur paiements — pas sur lignes_folio)
     async confirmerPaiement(paiementId, hotelId, acteurId, folioLigneId, referenceExterne, trx) {
       const c = conn(trx)
       const updateChamps = {
@@ -180,6 +212,54 @@ function createFacturationRepository(db) {
         .update(updateChamps)
         .returning('*')
       return mis ?? null
+    },
+
+    // ── Factures ────────────────────────────────────────────────────────────
+
+    // Créer une facture (checkout automatique ou manuelle)
+    // Le trigger generer_numero_facture() assigne le numéro si NULL.
+    async creerFacture(champs, trx) {
+      const c = conn(trx)
+      const [facture] = await c('factures')
+        .insert({
+          hotel_id:       champs.hotel_id,
+          reservation_id: champs.reservation_id || null,
+          client_id:      champs.client_id      || null,
+          montant_ht:     champs.montant_ht,
+          montant_taxes:  champs.montant_taxes   || 0,
+          montant_ttc:    champs.montant_ttc,
+          devise:         champs.devise          || 'XAF',
+          lignes:         JSON.stringify(champs.lignes || []),
+          statut:         champs.statut          || 'emise',
+          notes_client:   champs.notes_client    || null,
+          url_pdf:        null, // rempli après génération PDF
+        })
+        .returning('*')
+      return facture
+    },
+
+    // Mettre à jour l'url_pdf d'une facture après génération
+    async mettreAJourUrlPdf(factureId, hotelId, urlPdf, trx) {
+      const c = conn(trx)
+      const [mis] = await c('factures')
+        .where({ id: factureId, hotel_id: hotelId })
+        .update({ url_pdf: urlPdf, mis_a_jour_le: c.fn.now() })
+        .returning('*')
+      return mis ?? null
+    },
+
+    // Trouver une facture par reservation_id (scope hotel)
+    async trouverFactureParReservation(reservationId, hotelId, trx) {
+      return conn(trx)('factures')
+        .where({ reservation_id: reservationId, hotel_id: hotelId })
+        .first() ?? null
+    },
+
+    // Trouver une facture par id (scope hotel)
+    async trouverFactureParId(factureId, hotelId, trx) {
+      return conn(trx)('factures')
+        .where({ id: factureId, hotel_id: hotelId })
+        .first() ?? null
     },
 
     // ── Logs financiers ─────────────────────────────────────────────────────

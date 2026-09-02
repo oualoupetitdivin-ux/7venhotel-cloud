@@ -51,7 +51,17 @@ function createChambresRepository(db) {
       let q = conn(trx)('chambres AS ch')
         .leftJoin('types_chambre AS tc', 'tc.id', 'ch.type_chambre_id')
         .where('ch.hotel_id', hotelId)
-        .select(...COLS_CHAMBRE, ...COLS_TYPE)
+        .select(
+          ...COLS_CHAMBRE, ...COLS_TYPE,
+          // Réservation active (arrivee/depart) pour les chambres occupées
+          db.raw(`(
+            SELECT r_act.id FROM reservations r_act
+            WHERE r_act.chambre_id = ch.id
+              AND r_act.hotel_id = ?
+              AND r_act.statut IN ('arrivee', 'depart_aujourd_hui')
+            LIMIT 1
+          ) AS reservation_active_id`, [hotelId])
+        )
         .orderBy('ch.etage', 'asc')
         .orderBy('ch.numero', 'asc')
 

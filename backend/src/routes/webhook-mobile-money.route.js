@@ -1,8 +1,9 @@
 'use strict'
 
 const crypto = require('crypto')
-const { createFacturationService } = require('../services/facturation.service')
+const { createFacturationService }  = require('../services/facturation.service')
 const { createFacturationRepository } = require('../repositories/facturation.repository')
+const { createReservationsService } = require('../services/reservations.service')
 
 // ─────────────────────────────────────────────────────────────────────────────
 // routes/webhook-mobile-money.route.js
@@ -52,8 +53,9 @@ function verifierSignature(rawBody, signatureHeader, secret) {
 // ─────────────────────────────────────────────────────────────────────────────
 module.exports = async function webhookMobileMoneyRoute(fastify) {
 
-  const service = createFacturationService({ db: fastify.db, cache: fastify.cache })
-  const repo    = createFacturationRepository(fastify.db)
+  const service             = createFacturationService({ db: fastify.db, cache: fastify.cache })
+  const reservationsService = createReservationsService({ db: fastify.db, cache: fastify.cache })
+  const repo                = createFacturationRepository(fastify.db)
 
   fastify.post('/webhook/mobile-money', {
     config: { rawBody: true },  // Fastify doit conserver rawBody pour HMAC
@@ -246,6 +248,45 @@ module.exports = async function webhookMobileMoneyRoute(fastify) {
         ? 'Webhook mobile money — déjà traité (idempotent)'
         : 'Webhook mobile money — paiement confirmé avec succès'
       )
+
+      // Si le paiement était nouveau (pas idempotent), tenter de confirmer la
+      // réservation liée si elle est encore en statut 'tentative' (flux online).
+      if (!resultat.idempotent && paiement.folio_id) {
+        try {
+          const folio = await fastify.db('folios')
+            .where({ id: paiement.folio_id, hotel_id: hotelId })
+            .select('reservation_id')
+            .first()
+
+          if (folio?.reservation_id) {
+            const reservation = await fastify.db('reservations')
+              .where({ id: folio.reservation_id, hotel_id: hotelId })
+              .select('id', 'statut')
+              .first()
+
+            if (reservation?.statut === 'tentative') {
+              await reservationsService.confirmerReservation(
+                reservation.id, hotelId, null
+              )
+              req.log.info({
+                event:          'webhook_mobile_money',
+                reference_externe,
+                reservation_id: reservation.id,
+                result:         'reservation_confirmee',
+              }, 'Réservation online confirmée suite au paiement mobile money')
+            }
+          }
+        } catch (errConfirm) {
+          // Logguer sans bloquer — le paiement est déjà validé, la réconciliation
+          // de la réservation peut se faire manuellement si nécessaire.
+          req.log.error({
+            event:          'webhook_mobile_money',
+            reference_externe,
+            paiement_id:    paiement.id,
+            err:            { message: errConfirm.message },
+          }, 'Paiement confirmé mais erreur lors de la confirmation de réservation — réconciliation manuelle')
+        }
+      }
 
       return reply.send({ recu: true })
 

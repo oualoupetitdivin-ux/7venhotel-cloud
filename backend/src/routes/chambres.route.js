@@ -65,7 +65,7 @@ module.exports = async function chambresRoutes(fastify) {
 
   // ── PUT /:id ──────────────────────────────────────────────────────────────
   fastify.put('/:id', {
-    preHandler: [...pre, fastify.verifierPermission('chambres.modifier')],
+    preHandler: [...pre, fastify.verifierPermission('chambres.administrer')],
   }, async (req, reply) => {
     const validation = validerModification(req.body)
     if (!validation.ok) throw new ValidationError(validation.erreurs)
@@ -76,9 +76,7 @@ module.exports = async function chambresRoutes(fastify) {
   })
 
   // ── PATCH /:id/statut ─────────────────────────────────────────────────────
-  fastify.patch('/:id/statut', {
-    preHandler: [...pre, fastify.verifierPermission('chambres.modifier')],
-  }, async (req, reply) => {
+  const _handlerChangerStatut = async (req, reply) => {
     const validation = validerChangementStatut(req.body)
     if (!validation.ok) throw new ValidationError(validation.erreurs)
 
@@ -90,13 +88,23 @@ module.exports = async function chambresRoutes(fastify) {
     })
     req.log.info({ chambre_id: req.params.id, statut, hotel_id: req.hotelId }, 'Statut chambre modifié')
     return reply.send({ message: 'Statut mis à jour', chambre: mis })
-  })
+  }
+
+  fastify.patch('/:id/statut', {
+    preHandler: [...pre, fastify.verifierPermission('chambres.modifier')],
+  }, _handlerChangerStatut)
+
+  // Alias PUT — frontend envoie PUT /chambres/:id/statut
+  fastify.put('/:id/statut', {
+    preHandler: [...pre, fastify.verifierPermission('chambres.modifier')],
+  }, _handlerChangerStatut)
 
   // ── DELETE /:id ───────────────────────────────────────────────────────────
   fastify.delete('/:id', {
     preHandler: [...pre, fastify.verifierPermission('chambres.administrer')],
   }, async (req, reply) => {
-    await service.desactiver(req.params.id, req.hotelId)
+    const raison = req.body?.raison
+    await service.desactiver(req.params.id, req.hotelId, raison)
     req.log.info({ chambre_id: req.params.id, hotel_id: req.hotelId }, 'Chambre désactivée')
     return reply.send({ message: 'Chambre désactivée avec succès' })
   })

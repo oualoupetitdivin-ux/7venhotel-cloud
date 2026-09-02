@@ -1,6 +1,6 @@
 'use strict'
 
-require('dotenv').config({ path: '../../.env' })
+require('dotenv').config({ path: require('path').join(__dirname, '../../../.env') })
 const fs   = require('fs')
 const path = require('path')
 const { Client } = require('pg')
@@ -28,20 +28,15 @@ function getClientConfig() {
 
 const client = new Client(getClientConfig())
 
-async function migrer() {
-  console.log('🔄 Connexion à PostgreSQL...')
-  await client.connect()
-  console.log('✅ Connecté')
+// Applique tous les .sql (ordre alphabétique) d'un dossier, en sautant ceux
+// déjà enregistrés dans _migrations (clé = nom de fichier, partagée entre
+// tous les dossiers scannés — les noms doivent donc rester uniques globalement).
+async function appliquerDossier(dossierMigrations) {
+  if (!fs.existsSync(dossierMigrations)) {
+    console.log(`⏭  Dossier absent, ignoré : ${dossierMigrations}`)
+    return
+  }
 
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id SERIAL PRIMARY KEY,
-      nom VARCHAR(255) UNIQUE NOT NULL,
-      execute_le TIMESTAMPTZ DEFAULT NOW()
-    )
-  `)
-
-  const dossierMigrations = path.join(__dirname, '../../../database/migrations')
   const fichiers = fs.readdirSync(dossierMigrations)
     .filter(f => f.endsWith('.sql'))
     .sort()
@@ -68,6 +63,26 @@ async function migrer() {
       throw err
     }
   }
+}
+
+async function migrer() {
+  console.log('🔄 Connexion à PostgreSQL...')
+  await client.connect()
+  console.log('✅ Connecté')
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS _migrations (
+      id SERIAL PRIMARY KEY,
+      nom VARCHAR(255) UNIQUE NOT NULL,
+      execute_le TIMESTAMPTZ DEFAULT NOW()
+    )
+  `)
+
+  // Schéma de base — pipeline historique
+  await appliquerDossier(path.join(__dirname, '../../../database/migrations'))
+
+  // Migrations de fonctionnalités secondaires (backend/src/db/migrations)
+  await appliquerDossier(path.join(__dirname, '../db/migrations'))
 
   await client.end()
   console.log('✅ Toutes les migrations appliquées !')

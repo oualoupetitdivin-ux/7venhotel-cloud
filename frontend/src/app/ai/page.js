@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import AppLayout from '@/components/layout/AppLayout'
 import { aiAPI, analyticsAPI } from '@/lib/api'
+import { useAuthStore } from '@/lib/utils'
 
 const SUGGESTIONS = [
   { label: "📊 Occupation", question: "Analyse détaillée du taux d'occupation cette semaine" },
@@ -13,21 +14,26 @@ const SUGGESTIONS = [
 ]
 
 export default function AIPage() {
+  const hotel = useAuthStore(s => s.hotel)
+
   const [messages, setMessages]   = useState([])
   const [input, setInput]         = useState('')
   const [loading, setLoading]     = useState(false)
   const [alertes, setAlertes]     = useState([])
   const [recos, setRecos]         = useState([])
   const [previsions, setPrevisions] = useState([])
+  const [kpis, setKpis]           = useState(null)
   const chatRef = useRef(null)
+
+  const nomHotel = hotel?.nom || 'votre hôtel'
 
   useEffect(() => {
     chargerDonnees()
     setMessages([{
       role: 'ai',
-      content: `**Bonjour ! Je suis Ouwalou**, votre assistant IA pour l'Hôtel Royal Yaoundé. 🤖\n\nJ'analyse vos données opérationnelles en temps réel pour vous fournir des recommandations actionnables.\n\n**Aujourd'hui, je surveille :**\n• Taux d'occupation et tendances RevPAR\n• Performance housekeeping et délais\n• Tickets maintenance urgents\n• Prévisions revenus\n\nComment puis-je vous aider ?`
+      content: `**Bonjour ! Je suis Ouwalou**, votre assistant IA pour ${nomHotel}. 🤖\n\nJ'analyse vos données opérationnelles en temps réel pour vous fournir des recommandations actionnables.\n\n**Aujourd'hui, je surveille :**\n• Taux d'occupation et tendances RevPAR\n• Performance housekeeping et délais\n• Tickets maintenance urgents\n• Prévisions revenus\n\nComment puis-je vous aider ?`
     }])
-  }, [])
+  }, [nomHotel])
 
   useEffect(() => {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
@@ -35,12 +41,14 @@ export default function AIPage() {
 
   async function chargerDonnees() {
     try {
-      const [aRes, rRes, pRes] = await Promise.allSettled([
-        aiAPI.alertes(), aiAPI.recommandations(), aiAPI.previsions()
+      const [aRes, rRes, pRes, kpiRes] = await Promise.allSettled([
+        aiAPI.alertes(), aiAPI.recommandations(), aiAPI.previsions(),
+        analyticsAPI.dashboard()
       ])
       if (aRes.status === 'fulfilled') setAlertes(aRes.value.data.alertes || [])
       if (rRes.status === 'fulfilled') setRecos(rRes.value.data.recommandations || [])
       if (pRes.status === 'fulfilled') setPrevisions(pRes.value.data.previsions || [])
+      if (kpiRes.status === 'fulfilled') setKpis(kpiRes.value.data)
     } catch {}
   }
 
@@ -71,35 +79,14 @@ export default function AIPage() {
       .replace(/\n/g, '<br/>')
   }
 
-  // Données de démo si API pas encore disponible
-  const ALERTES_DEMO = [
-    { id:'1', titre:'Chambre 304 — Clim hors service', message:'Client VIP affecté · Ticket TKT-001', severite:'critique' },
-    { id:'2', titre:'8 chambres sales à 15h00', message:'Risque retard check-in', severite:'avertissement' },
-    { id:'3', titre:'Occupation +4% vs semaine passée', message:'RevPAR en hausse', severite:'info' },
-  ]
-  const RECOS_DEMO = [
-    { id:'1', titre:'💰 Hausser tarif week-end', description:'Occupation Sam 97% — Opportunité +8 000 XAF/nuit' },
-    { id:'2', titre:'🧹 Optimiser planning HK', description:'Fatou D. 24min vs Moussa T. 31min — Rééquilibrer' },
-    { id:'3', titre:'🍽 Booster room service soir', description:'Room service < 5% CA — Promouvoir 19h–22h' },
-  ]
-  const PREVISIONS_DEMO = [
-    { date:'2026-04-14', taux_occupation_prevu:82, adr_prevu:25000 },
-    { date:'2026-04-15', taux_occupation_prevu:79, adr_prevu:24500 },
-    { date:'2026-04-16', taux_occupation_prevu:85, adr_prevu:27000 },
-    { date:'2026-04-17', taux_occupation_prevu:88, adr_prevu:28500 },
-    { date:'2026-04-18', taux_occupation_prevu:95, adr_prevu:32000 },
-    { date:'2026-04-19', taux_occupation_prevu:98, adr_prevu:35000 },
-    { date:'2026-04-20', taux_occupation_prevu:91, adr_prevu:29000 },
-  ]
-
-  const displayAlertes   = alertes.length   ? alertes   : ALERTES_DEMO
-  const displayRecos     = recos.length     ? recos     : RECOS_DEMO
-  const displayPrevisions = previsions.length ? previsions : PREVISIONS_DEMO
+  const displayAlertes    = alertes
+  const displayRecos      = recos
+  const displayPrevisions = previsions
 
   const SEV = {
-    critique:    'border-l-red-500 bg-red-500/5',
-    avertissement:'border-l-amber-500 bg-amber-500/5',
-    info:         'border-l-blue-500 bg-blue-500/5',
+    critique:    'bg-red-500/10 border border-red-500/25',
+    avertissement:'bg-amber-500/10 border border-amber-500/25',
+    info:         'bg-blue-500/10 border border-blue-500/25',
   }
   const SEV_TEXT = {
     critique:'text-red-400', avertissement:'text-amber-400', info:'text-blue-400'
@@ -129,17 +116,17 @@ export default function AIPage() {
         </button>
       </div>
 
-      {/* KPIs mini */}
+      {/* KPIs mini — données réelles depuis analytics/dashboard */}
       <div className="grid grid-cols-6 gap-2 mb-5">
         {[
-          ['87%',   'Occupation',    'border-blue-500',   '#60A5FA'],
-          ['23 055','RevPAR XAF',    'border-emerald-500','#34D399'],
-          ['28 min','Moy. ménage',   'border-amber-500',  '#FBB740'],
-          [displayAlertes.filter(a=>a.severite==='critique').length, 'Alertes', 'border-red-500', '#F87171'],
-          ['91%',   'Productivité',  'border-purple-500', '#A78BFA'],
-          ['4.8★',  'Satisfaction',  'border-cyan-500',   '#22D3EE'],
-        ].map(([val, lbl, brd, col]) => (
-          <div key={lbl} className={`card p-3 border-b-2 ${brd} text-center`}>
+          [kpis ? `${kpis.taux_occupation || 0}%` : '—',         'Occupation',    '#60A5FA'],
+          [kpis ? `${kpis.chambres_occupees || 0}/${kpis.chambres_disponibles || 0}` : '—', 'Chambres occ.','#34D399'],
+          [kpis ? kpis.arrivees_aujourd_hui || 0 : '—',           'Arrivées',      '#A78BFA'],
+          [kpis ? kpis.departs_aujourd_hui || 0 : '—',            'Départs',       '#FBB740'],
+          [displayAlertes.filter(a=>a.severite==='critique').length,'Alertes',      '#F87171'],
+          [kpis ? kpis.taches_menage_ouvertes || 0 : '—',         'Ménage',        '#22D3EE'],
+        ].map(([val, lbl, col]) => (
+          <div key={lbl} className="kpi-card text-center">
             <div className="text-[16px] font-black font-mono" style={{ color: col }}>{val}</div>
             <div className="text-[9px] text-[var(--text-3)] font-bold uppercase tracking-wide mt-1">{lbl}</div>
           </div>

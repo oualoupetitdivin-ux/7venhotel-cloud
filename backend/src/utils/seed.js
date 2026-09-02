@@ -171,6 +171,8 @@ async function seeder(knexInstance) {
         { code: 'parametres.modifier',    description: 'Modifier les paramètres',   module: 'parametres',   action: 'modifier'    },
         { code: 'staff.lire',             description: 'Voir le personnel',         module: 'staff',        action: 'lire'        },
         { code: 'staff.administrer',      description: 'Gérer le personnel',        module: 'staff',        action: 'administrer' },
+        { code: 'fidelite.lire',          description: 'Voir la fidélité et les offres',    module: 'fidelite', action: 'lire'     },
+        { code: 'fidelite.modifier',      description: 'Configurer fidélité et offres',     module: 'fidelite', action: 'modifier' },
         { code: 'plateforme.administrer', description: 'Administrer la plateforme', module: 'plateforme',   action: 'administrer' },
       ]
 
@@ -195,8 +197,8 @@ async function seeder(knexInstance) {
         .forEach(p => rolesPermissions.push({ role: 'manager', permission_id: p.id }))
 
       const codesParRole = {
-        reception:    ['reservations.lire','reservations.creer','reservations.modifier','reservations.annuler','chambres.lire','clients.lire','clients.creer','clients.modifier','maintenance.creer','restaurant.creer','facturation.lire','menage.lire'],
-        housekeeping: ['menage.lire','menage.creer','menage.modifier','menage.valider','chambres.lire'],
+        reception:    ['reservations.lire','reservations.creer','reservations.modifier','reservations.annuler','chambres.lire','chambres.modifier','clients.lire','clients.creer','clients.modifier','maintenance.creer','restaurant.creer','facturation.lire','facturation.creer','menage.lire','fidelite.lire'],
+        housekeeping: ['menage.lire','menage.creer','menage.modifier','menage.valider','chambres.lire','chambres.modifier'],
         restaurant:   ['restaurant.lire','restaurant.creer','restaurant.modifier','facturation.lire','reservations.lire'],
         comptabilite: ['facturation.lire','facturation.creer','facturation.modifier','analytics.lire','reservations.lire','clients.lire'],
         technicien:   ['maintenance.lire','maintenance.creer','maintenance.modifier','chambres.lire'],

@@ -1,6 +1,9 @@
 'use strict'
 
 const { createReservationsRepository, STATUTS_CHECKIN_VALIDES, STATUTS_CHECKOUT_VALIDES } = require('../repositories/reservations.repository')
+const { createFacturationRepository } = require('../repositories/facturation.repository')
+const { genererFacturePDF } = require('./pdf.service')
+const { envoyerFacture }    = require('./email.service')
 const { NotFoundError, ConflictError, DomainError } = require('../errors')
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,7 +34,8 @@ const TRANSITIONS_VALIDES = {
 }
 
 function createReservationsService({ db, cache }) {
-  const repo = createReservationsRepository(db)
+  const repo            = createReservationsRepository(db)
+  const facturationRepo = createFacturationRepository(db)
 
   // ── Clés cache ─────────────────────────────────────────────────────────────
   const cleListeRes  = (hotelId) => `reservations:${hotelId}`
@@ -114,8 +118,12 @@ function createReservationsService({ db, cache }) {
     //   8. Logger l'audit
     async creerReservation(hotelId, tenantId, acteurId, acteurType, donnees) {
       let reservation
+      let tentatives = 0
+      const MAX_TENTATIVES = 2
 
-      try {
+      while (tentatives < MAX_TENTATIVES) {
+        tentatives++
+        try {
         await db.transaction(async (trx) => {
 
           // Vérification client — isolation tenant
@@ -180,9 +188,9 @@ function createReservationsService({ db, cache }) {
             : 0
           const { remiseMontant } = calculerRemise(tarifNuit, nombreNuits, remisePct)
 
-          const totalHebergement = Math.round((totalHebergementBrut - remiseMontant) * 100) / 100
-          const { totalTaxes }   = calculerTaxes(tarifNuit, nombreNuits, taxes)
-          const totalGeneral     = Math.round((totalHebergement + totalTaxes) * 100) / 100
+          const totalHebergement           = Math.round((totalHebergementBrut - remiseMontant) * 100) / 100
+          const { totalTaxes, detailTaxes } = calculerTaxes(tarifNuit, nombreNuits, taxes)
+          const totalGeneral               = Math.round((totalHebergement + totalTaxes) * 100) / 100
 
           // Statut initial : tentative si online, confirmee si réception
           const statut = source === 'online' ? 'tentative' : 'confirmee'
@@ -213,6 +221,55 @@ function createReservationsService({ db, cache }) {
 
           reservation = await repo.creer(champs, trx)
 
+          // R1 — Créer le folio dans la même transaction + lignes initiales (P5)
+          // Si l'un des INSERT échoue → rollback total. Zéro folio orphelin possible.
+          const folio = await facturationRepo.creerFolio({
+            reservation_id: reservation.id,
+            hotel_id:       hotelId,
+            client_id:      donnees.client_id || null,
+            numero_folio:   'FOL-' + reservation.numero_reservation,
+            devise:         champs.devise,
+          }, trx)
+
+          // P5 — Ligne hébergement (débit de base)
+          if (totalHebergement > 0) {
+            const descHeberg = remisePct > 0
+              ? `Hébergement — ${nombreNuits} nuit${nombreNuits > 1 ? 's' : ''} × ${tarifNuit} ${champs.devise} (remise ${remisePct}%)`
+              : `Hébergement — ${nombreNuits} nuit${nombreNuits > 1 ? 's' : ''} × ${tarifNuit} ${champs.devise}`
+            await facturationRepo.insererLigne({
+              folio_id:      folio.id,
+              hotel_id:      hotelId,
+              type_ligne:    'hebergement',
+              sens:          'debit',
+              montant:       totalHebergement,
+              devise:        champs.devise,
+              description:   descHeberg,
+              source_module: 'reservation',
+              cree_par:      acteurId || null,
+              cree_par_type: acteurType,
+              metadata:      { tarif_nuit: tarifNuit, nombre_nuits: nombreNuits, reduction_pct: remisePct },
+            }, trx)
+          }
+
+          // P5 — Lignes taxes (une ligne débit par taxe active)
+          for (const taxe of detailTaxes) {
+            if (taxe.montant > 0) {
+              await facturationRepo.insererLigne({
+                folio_id:      folio.id,
+                hotel_id:      hotelId,
+                type_ligne:    'taxe',
+                sens:          'debit',
+                montant:       taxe.montant,
+                devise:        champs.devise,
+                description:   taxe.nom,
+                source_module: 'reservation',
+                cree_par:      acteurId || null,
+                cree_par_type: acteurType,
+                metadata:      { code: taxe.code },
+              }, trx)
+            }
+          }
+
           // Créer session portail inactive (activée au check-in)
           if (donnees.chambre_id) {
             const dureeSejourMs = (new Date(donnees.date_depart) - new Date(donnees.date_arrivee))
@@ -238,21 +295,26 @@ function createReservationsService({ db, cache }) {
             acteur_type:    acteurType,
           }, trx)
         })
-      } catch (err) {
-        if (err.code === '23505') {
-          // Rare : numéro_reservation collision (trigger PostgreSQL) — retry implicite
-          throw new ConflictError('Erreur de génération du numéro de réservation', 'NUMERO_COLLISION')
+        break // succès — sortir de la boucle
+        } catch (err) {
+          if (err.code === '23505' && tentatives < MAX_TENTATIVES) {
+            // Collision de numéro (trigger COUNT non atomique) — retenter une fois
+            continue
+          }
+          if (err.code === '23505') {
+            throw new ConflictError('Erreur de génération du numéro de réservation', 'NUMERO_COLLISION')
+          }
+          if (err.code === '23P01') {
+            // Contrainte d'exclusion PostgreSQL : chevauchement de dates détecté
+            // au niveau DB (filet de sécurité contre les race conditions)
+            throw new ConflictError(
+              'La chambre est déjà réservée sur cette période',
+              'CHAMBRE_NON_DISPONIBLE',
+              { chambre_id: donnees.chambre_id }
+            )
+          }
+          throw err
         }
-        if (err.code === '23P01') {
-          // Contrainte d'exclusion PostgreSQL : chevauchement de dates détecté
-          // au niveau DB (filet de sécurité contre les race conditions)
-          throw new ConflictError(
-            'La chambre est déjà réservée sur cette période',
-            'CHAMBRE_NON_DISPONIBLE',
-            { chambre_id: donnees.chambre_id }
-          )
-        }
-        throw err
       }
 
       await invaliderCaches(hotelId, null)
@@ -333,7 +395,11 @@ function createReservationsService({ db, cache }) {
         // héberger quelqu'un sans réservation en utilisant une réservation future.
         // Override autorisé uniquement pour manager et super_admin, et loggué.
         const aujourdhui = new Date().toISOString().split('T')[0]
-        const estAnticipe = reservation.date_arrivee > aujourdhui
+        // Knex hydrate les colonnes DATE en objets Date JS — normaliser en string ISO
+        const dateArriveeStr = reservation.date_arrivee instanceof Date
+          ? reservation.date_arrivee.toISOString().split('T')[0]
+          : String(reservation.date_arrivee).slice(0, 10)
+        const estAnticipe = dateArriveeStr > aujourdhui
 
         if (estAnticipe) {
           const ROLES_OVERRIDE_ANTICIPE = ['manager', 'super_admin']
@@ -535,10 +601,63 @@ function createReservationsService({ db, cache }) {
           acteur_id:      acteurId || null,
           acteur_type:    'staff',
         }, trx)
+
+        // Attribution automatique de points fidélité — dans la même transaction
+        // que le checkout, mais son échec ne doit jamais faire échouer le checkout.
+        if (reservation.client_id) {
+          try {
+            const regles = await trx('regles_fidelite').where({ hotel_id: hotelId }).first()
+            const pointsParNuit = regles?.points_par_nuit ?? 10
+            const pointsPar1000 = regles?.points_par_1000_xaf ?? 5
+            const seuilSilver   = regles?.seuil_silver ?? 200
+            const seuilGold     = regles?.seuil_gold ?? 500
+
+            const nbNuits = Number(reservation.nombre_nuits) || 0
+            const total   = Number(reservation.total_general) || 0
+            const pointsGagnes = (nbNuits * pointsParNuit) + (Math.floor(total / 1000) * pointsPar1000)
+
+            if (pointsGagnes > 0) {
+              const clientAvant = await trx('clients')
+                .where({ id: reservation.client_id, hotel_id: hotelId })
+                .first()
+
+              if (clientAvant) {
+                const soldeApres = (clientAvant.points_fidelite || 0) + pointsGagnes
+                const nouveauNiveau = soldeApres >= seuilGold ? 'gold' : soldeApres >= seuilSilver ? 'silver' : 'bronze'
+
+                await trx('clients')
+                  .where({ id: reservation.client_id, hotel_id: hotelId })
+                  .update({ points_fidelite: soldeApres, niveau_fidelite: nouveauNiveau })
+
+                await trx('points_fidelite_log').insert({
+                  hotel_id:       hotelId,
+                  client_id:      reservation.client_id,
+                  type_mouvement: 'credit',
+                  points:         pointsGagnes,
+                  solde_apres:    soldeApres,
+                  motif:          `Checkout réservation ${reservation.numero_reservation}`,
+                  reference_id:   id,
+                })
+              }
+            }
+          } catch (errFidelite) {
+            console.error('[CHECKOUT] Erreur attribution points fidélité (non bloquant):', errFidelite.message)
+          }
+        }
       })
 
       await invaliderCaches(hotelId, id)
-      return { tache_menage: tacheMenage || null }
+
+      // ── Génération facture + PDF + email (post-transaction, non bloquant) ──
+      // La transaction est déjà commitée — les erreurs ici ne font PAS rollback.
+      let factureGeneree = null
+      try {
+        factureGeneree = await _genererFactureCheckout({ db, repo: facturationRepo, hotelId, reservationId: id, log: db.log })
+      } catch (errFacture) {
+        console.error('[CHECKOUT] Erreur génération facture (non bloquant):', errFacture.message)
+      }
+
+      return { tache_menage: tacheMenage || null, facture: factureGeneree }
     },
 
     // ── Annuler une réservation ───────────────────────────────────────────
@@ -578,6 +697,99 @@ function createReservationsService({ db, cache }) {
       return mis
     },
 
+  }
+}
+
+// ── Génération de facture au checkout ────────────────────────────────────────
+// Appelée POST-transaction checkout. Ne doit jamais faire planter le checkout.
+// Si la facture existe déjà (retry), on retourne l'existante sans doublon.
+async function _genererFactureCheckout({ db, repo, hotelId, reservationId, log }) {
+  // 1. Vérifier si une facture existe déjà pour cette réservation
+  const existante = await repo.trouverFactureParReservation(reservationId, hotelId)
+  if (existante) {
+    return { id: existante.id, numero_facture: existante.numero_facture, url_pdf: existante.url_pdf, deja_existante: true }
+  }
+
+  // 2. Récupérer données nécessaires
+  const [reservation, folio, hotel] = await Promise.all([
+    db('reservations AS r')
+      .leftJoin('clients AS c', 'c.id', 'r.client_id')
+      .where({ 'r.id': reservationId, 'r.hotel_id': hotelId })
+      .select(
+        'r.*',
+        db.raw("c.prenom || ' ' || c.nom AS nom_client"),
+        'c.email AS email_client',
+        'c.telephone AS telephone_client',
+        'c.id AS client_id_reel'
+      )
+      .first(),
+    db('folios').where({ reservation_id: reservationId, hotel_id: hotelId }).first(),
+    db('hotels AS h')
+      .leftJoin('parametres_hotel AS ph', 'ph.hotel_id', 'h.id')
+      .where('h.id', hotelId)
+      .select('h.nom', 'h.id', db.raw("ph.parametres_supplementaires->>'adresse' AS adresse"), db.raw("ph.parametres_supplementaires->>'email_contact' AS email"))
+      .first(),
+  ])
+
+  if (!reservation || !folio) throw new Error(`Données manquantes pour checkout (res=${reservationId}, folio=${!!folio})`)
+
+  const [lignes, paiements, soldeResult] = await Promise.all([
+    db('lignes_folio').where({ folio_id: folio.id, hotel_id: hotelId }).orderBy('cree_le', 'asc'),
+    db('paiements').where({ folio_id: folio.id, hotel_id: hotelId }).orderBy('cree_le', 'asc'),
+    db.raw('SELECT * FROM get_solde_folio(?, ?)', [folio.id, hotelId]),
+  ])
+  const solde = soldeResult.rows[0]
+
+  // 3. Calcul montants — depuis lignes folio (source de vérité)
+  const debits  = lignes.filter(l => l.sens === 'debit')
+  const credits = lignes.filter(l => l.sens === 'credit')
+  const totalHT    = debits.reduce((s, l) => s + Number(l.montant_total || 0), 0)
+  const totalTaxes = debits.filter(l => l.type_ligne === 'taxe').reduce((s, l) => s + Number(l.montant_total || 0), 0)
+  const totalTTC   = totalHT // lignes folio = TTC (taxes incluses dans les lignes séparées)
+
+  // 4. Créer la facture en DB
+  const facture = await repo.creerFacture({
+    hotel_id:       hotelId,
+    reservation_id: reservationId,
+    client_id:      reservation.client_id_reel || null,
+    montant_ht:     Math.max(0, totalHT - totalTaxes),
+    montant_taxes:  totalTaxes,
+    montant_ttc:    totalTTC,
+    devise:         folio.devise || 'XAF',
+    lignes:         lignes.map(l => ({ description: l.description, type: l.type_ligne, montant: l.montant_total, sens: l.sens })),
+    statut:         'emise',
+  })
+
+  // 5. Générer le PDF
+  const { cheminRelatif, filepath } = await genererFacturePDF({
+    facture,
+    reservation,
+    hotel:     { nom: hotel?.nom || 'Hôtel', adresse: hotel?.adresse, email: hotel?.email },
+    client:    { nom: reservation.nom_client, email: reservation.email_client, telephone: reservation.telephone_client },
+    lignes:    lignes.map(l => ({ ...l, montant: l.montant_total })),
+    paiements,
+    solde,
+  })
+
+  // 6. Stocker l'URL du PDF
+  await repo.mettreAJourUrlPdf(facture.id, hotelId, cheminRelatif)
+
+  // 7. Envoyer l'email (silencieux si pas de SMTP)
+  await envoyerFacture({
+    emailDestinataire: reservation.email_client,
+    nomClient:         reservation.nom_client,
+    nomHotel:          hotel?.nom || 'Hôtel',
+    numeroFacture:     facture.numero_facture,
+    pdfPath:           filepath,
+    log,
+  })
+
+  return {
+    id:             facture.id,
+    numero_facture: facture.numero_facture,
+    url_pdf:        cheminRelatif,
+    montant_ttc:    facture.montant_ttc,
+    devise:         facture.devise,
   }
 }
 

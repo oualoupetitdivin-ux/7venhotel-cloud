@@ -1,18 +1,69 @@
 // ── Store d'authentification (Zustand) ───────────────────────────────
 import { create } from 'zustand'
 
+// ── Source de vérité unique pour les redirections post-login ──────────
+// Priorité : doit_changer_mdp > manager sans hôtel > destination par rôle
+// Utilisée dans : page.js, connexion/page.js, changer-mot-de-passe/page.js, onboarding/page.js
+const DESTINATIONS_PAR_ROLE = {
+  super_admin:  '/platform/dashboard',
+  manager:      '/dashboard',
+  reception:    '/timeline',
+  housekeeping: '/menage',
+  restaurant:   '/restaurant',
+  comptabilite: '/facturation',
+  technicien:   '/maintenance',
+}
+
+export function resolvePostLoginDestination(user, hotel) {
+  if (!user) return '/auth/connexion'
+
+  if (user.doit_changer_mdp === true) {
+    return '/auth/changer-mot-de-passe?force=1'
+  }
+
+  if (user.role === 'manager' && !hotel?.id) {
+    return '/onboarding'
+  }
+
+  return DESTINATIONS_PAR_ROLE[user.role] || '/dashboard'
+}
+
+const LS_KEYS = ['7vh_token','7vh_refresh_token','7vh_user','7vh_hotel','7vh_hotel_id']
+
+function clearLocalStorage() {
+  try { LS_KEYS.forEach(k => localStorage.removeItem(k)) } catch {}
+}
+
 export const useAuthStore = create((set, get) => ({
-  user:    null,
-  hotel:   null,
-  token:   null,
-  loading: false,
+  user:      null,
+  hotel:     null,
+  token:     null,
+  loading:   false,
+  // _hydrated : true dès qu'init() a terminé (succès ou échec).
+  // Permet aux guards de distinguer "en cours d'hydration" vs "pas de session".
+  // Sans ce flag, un token présent mais user absent bloque le guard en boucle.
+  _hydrated: false,
 
   init() {
     if (typeof window === 'undefined') return
-    const token = localStorage.getItem('7vh_token')
-    const user  = JSON.parse(localStorage.getItem('7vh_user') || 'null')
-    const hotel = JSON.parse(localStorage.getItem('7vh_hotel') || 'null')
-    if (token && user) set({ token, user, hotel })
+    if (get()._hydrated) return
+
+    let token = null, user = null, hotel = null
+    try {
+      token = localStorage.getItem('7vh_token') || null
+      user  = JSON.parse(localStorage.getItem('7vh_user')  || 'null')
+      hotel = JSON.parse(localStorage.getItem('7vh_hotel') || 'null')
+    } catch {
+      clearLocalStorage()
+      token = null; user = null; hotel = null
+    }
+
+    if (token && !user) {
+      clearLocalStorage()
+      token = null
+    }
+
+    set({ token, user, hotel, _hydrated: true })
   },
 
   setSession({ token, token_rafraichissement, utilisateur, hotel }) {
@@ -21,13 +72,14 @@ export const useAuthStore = create((set, get) => ({
     localStorage.setItem('7vh_user',          JSON.stringify(utilisateur))
     localStorage.setItem('7vh_hotel',         JSON.stringify(hotel))
     if (hotel?.id) localStorage.setItem('7vh_hotel_id', hotel.id)
-    set({ token, user: utilisateur, hotel })
+    // _hydrated=true : après setSession, l'état est connu et valide
+    set({ token, user: utilisateur, hotel, _hydrated: true })
   },
 
   logout() {
-    ['7vh_token','7vh_refresh_token','7vh_user','7vh_hotel','7vh_hotel_id']
-      .forEach(k => localStorage.removeItem(k))
-    set({ token: null, user: null, hotel: null })
+    clearLocalStorage()
+    // _hydrated reste true : on connaît l'état (déconnecté)
+    set({ token: null, user: null, hotel: null, _hydrated: true })
   },
 
   get isAuthenticated() { return !!get().token && !!get().user },

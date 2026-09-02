@@ -5,39 +5,63 @@
 
 @layer base {
   :root {
+    /* ── Palette sombre ────────────────────────────────────── */
     --bg-0: #060810;
     --bg-1: #0B0F1A;
     --bg-2: #111827;
     --bg-3: #1A2235;
     --bg-4: #1F2B40;
     --border-0: rgba(255,255,255,.04);
-    --border-1: rgba(255,255,255,.07);
-    --border-2: rgba(255,255,255,.11);
+    --border-1: rgba(255,255,255,.08);
+    --border-2: rgba(255,255,255,.13);
     --text-0: #F0F4FF;
     --text-1: #C8D5E8;
     --text-2: #8A9BB8;
     --text-3: #4A6080;
+    --text-4: #2E3D55;
     --blue: #3B82F6;
     --blue-hi: #60A5FA;
     --green: #10B981;
     --amber: #F59E0B;
     --red: #EF4444;
     --purple: #8B5CF6;
+
+    /* ── Système d'élévation — ombres portées ──────────────── */
+    --shadow-xs: 0 1px 3px rgba(0,0,0,.25), 0 1px 2px rgba(0,0,0,.18);
+    --shadow-sm: 0 3px 12px rgba(0,0,0,.32), 0 1px 4px rgba(0,0,0,.20);
+    --shadow-md: 0 6px 24px rgba(0,0,0,.40), 0 2px 8px rgba(0,0,0,.24);
+    --shadow-lg: 0 12px 40px rgba(0,0,0,.50), 0 4px 14px rgba(0,0,0,.28);
+    --shadow-xl: 0 24px 64px rgba(0,0,0,.60), 0 8px 22px rgba(0,0,0,.34);
+
+    /* ── Surfaces spéciales ────────────────────────────────── */
+    --topbar-bg:  rgba(11,15,26,.90);
+    --sidebar-bg: #0B0F1A;
   }
 
   .light {
-    --bg-0: #F8FAFC;
+    --bg-0: #F0F4FA;
     --bg-1: #FFFFFF;
     --bg-2: #FFFFFF;
-    --bg-3: #F1F5F9;
-    --bg-4: #E8EFF7;
-    --border-0: #E8EEF6;
-    --border-1: #DDE6F0;
-    --border-2: #CBD5E1;
+    --bg-3: #F4F7FC;
+    --bg-4: #E8EEF8;
+    --border-0: rgba(30,50,100,.07);
+    --border-1: rgba(30,50,100,.11);
+    --border-2: rgba(30,50,100,.18);
     --text-0: #0F172A;
     --text-1: #1E293B;
     --text-2: #475569;
     --text-3: #94A3B8;
+    --text-4: #CBD5E1;
+
+    /* Ombres légères teintées bleues — paraissent ancrées sans noircir */
+    --shadow-xs: 0 1px 3px rgba(15,30,80,.09), 0 1px 2px rgba(15,30,80,.06);
+    --shadow-sm: 0 3px 12px rgba(15,30,80,.10), 0 1px 4px rgba(15,30,80,.07);
+    --shadow-md: 0 6px 24px rgba(15,30,80,.11), 0 2px 8px rgba(15,30,80,.07);
+    --shadow-lg: 0 12px 40px rgba(15,30,80,.13), 0 4px 14px rgba(15,30,80,.09);
+    --shadow-xl: 0 24px 64px rgba(15,30,80,.16), 0 8px 22px rgba(15,30,80,.11);
+
+    --topbar-bg:  rgba(255,255,255,.93);
+    --sidebar-bg: #FFFFFF;
   }
 
   html {
@@ -60,17 +84,35 @@
 }
 
 @layer components {
+
+  /* ─────────────────────────────────────────────────────────
+     NAVIGATION LATÉRALE
+  ───────────────────────────────────────────────────────── */
   .sidebar-nav-item {
     @apply flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-medium
-           text-[var(--text-2)] cursor-pointer transition-all duration-150
-           hover:bg-[var(--bg-3)] hover:text-[var(--text-0)] no-underline;
+           text-[var(--text-2)] cursor-pointer no-underline;
+    transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+  }
+  .sidebar-nav-item:hover {
+    background: var(--bg-3);
+    color: var(--text-0);
+    transform: translateX(2px);
   }
   .sidebar-nav-item.active {
     @apply bg-blue-500/10 text-blue-400 font-semibold;
   }
 
+  /* ─────────────────────────────────────────────────────────
+     CARTES — Élévation L1
+  ───────────────────────────────────────────────────────── */
   .card {
     @apply bg-[var(--bg-2)] border border-[var(--border-1)] rounded-xl;
+    box-shadow: var(--shadow-sm);
+    transition: transform 200ms ease, box-shadow 200ms ease;
+  }
+  .card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
   }
   .card-header {
     @apply flex items-center justify-between px-4 py-3 border-b border-[var(--border-0)];
@@ -79,12 +121,43 @@
     @apply text-[12.5px] font-bold text-[var(--text-0)];
   }
 
+  /* ─────────────────────────────────────────────────────────
+     KPI CARDS — Élévation L2 (plus haute)
+     Pas de bordures épaisses colorées — les ombres font le relief
+  ───────────────────────────────────────────────────────── */
+  .kpi-card {
+    @apply bg-[var(--bg-2)] border border-[var(--border-1)] rounded-xl p-4
+           relative overflow-hidden cursor-default;
+    box-shadow: var(--shadow-md);
+    transition: transform 220ms ease, box-shadow 220ms ease;
+  }
+  .kpi-card:hover {
+    box-shadow: var(--shadow-lg);
+    transform: translateY(-5px);
+  }
+  .kpi-value {
+    @apply text-2xl font-black text-[var(--text-0)] font-mono tracking-tight leading-none;
+  }
+  .kpi-label {
+    @apply text-[9.5px] font-bold uppercase tracking-widest text-[var(--text-2)] mb-1.5;
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     BOUTONS
+  ───────────────────────────────────────────────────────── */
   .btn {
     @apply inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold
-           cursor-pointer border-none transition-all duration-150 no-underline whitespace-nowrap;
+           cursor-pointer border-none no-underline whitespace-nowrap;
+    transition: background 150ms ease, color 150ms ease,
+                transform 150ms ease, box-shadow 150ms ease;
   }
   .btn-primary {
-    @apply bg-blue-500 text-white hover:bg-blue-400 hover:-translate-y-px;
+    @apply bg-blue-500 text-white hover:bg-blue-400;
+    box-shadow: var(--shadow-xs);
+  }
+  .btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
   }
   .btn-ghost {
     @apply bg-transparent text-[var(--text-1)] border border-[var(--border-2)]
@@ -95,21 +168,29 @@
   }
   .btn-success {
     @apply bg-emerald-500 text-white hover:bg-emerald-400;
+    box-shadow: var(--shadow-xs);
   }
   .btn-sm { @apply px-2.5 py-1 text-[11px] rounded-md; }
   .btn-xs { @apply px-2 py-0.5 text-[10.5px] rounded; }
   .btn-lg { @apply px-5 py-2.5 text-sm rounded-xl; }
 
+  /* ─────────────────────────────────────────────────────────
+     FORMULAIRES
+  ───────────────────────────────────────────────────────── */
   .input {
     @apply w-full bg-[var(--bg-3)] border border-[var(--border-1)] rounded-lg
            text-[var(--text-0)] text-xs px-2.5 py-2 outline-none
            focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20
-           placeholder:text-[var(--text-3)] transition-all;
+           placeholder:text-[var(--text-3)];
+    transition: border-color 150ms, box-shadow 150ms;
   }
+  .form-label { @apply text-[11px] font-semibold text-[var(--text-1)] block mb-1; }
+  .form-group  { @apply flex flex-col gap-1; }
 
-  .badge {
-    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold;
-  }
+  /* ─────────────────────────────────────────────────────────
+     BADGES
+  ───────────────────────────────────────────────────────── */
+  .badge        { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold; }
   .badge-blue   { @apply bg-blue-500/10 text-blue-400; }
   .badge-green  { @apply bg-emerald-500/10 text-emerald-400; }
   .badge-amber  { @apply bg-amber-500/10 text-amber-400; }
@@ -117,59 +198,107 @@
   .badge-purple { @apply bg-purple-500/10 text-purple-400; }
   .badge-gray   { @apply bg-[var(--bg-4)] text-[var(--text-2)]; }
 
-  .kpi-card {
-    @apply card p-4 relative overflow-hidden hover:border-[var(--border-2)]
-           hover:-translate-y-px transition-all cursor-default;
+  /* ─────────────────────────────────────────────────────────
+     TABLEAUX — Survol 3D + mode focus (déclenché par JS après 4s)
+  ───────────────────────────────────────────────────────── */
+  .table-base {
+    @apply w-full text-xs;
+    border-collapse: separate;
+    border-spacing: 0;
   }
-  .kpi-value {
-    @apply text-2xl font-black text-[var(--text-0)] font-mono tracking-tight leading-none;
-  }
-  .kpi-label {
-    @apply text-[9.5px] font-bold uppercase tracking-widest text-[var(--text-3)] mb-1.5;
-  }
-
-  .table-base { @apply w-full border-collapse text-xs; }
-  .table-base thead tr { @apply border-b border-[var(--border-1)]; }
+  .table-base thead tr { border-bottom: 1px solid var(--border-1); }
   .table-base th {
-    @apply text-[9.5px] font-bold uppercase tracking-wider text-[var(--text-3)]
+    @apply text-[9.5px] font-bold uppercase tracking-wider text-[var(--text-2)]
            px-3.5 py-2 text-left;
+    background: var(--bg-2);
   }
   .table-base td {
-    @apply px-3.5 py-2.5 text-[var(--text-0)] border-b border-[var(--border-0)];
+    @apply px-3.5 py-2.5 text-[var(--text-0)];
+    border-bottom: 1px solid var(--border-0);
+    transition: background-color 150ms ease, opacity 400ms ease, filter 400ms ease;
   }
-  .table-base tbody tr {
-    @apply cursor-pointer transition-colors hover:bg-[var(--bg-3)];
-  }
-  .table-base tbody tr:last-child td { @apply border-b-0; }
+  .table-base tbody tr:last-child td { border-bottom: none; }
 
+  /* Survol de ligne — élévation par drop-shadow + fond */
+  .table-base tbody tr {
+    cursor: pointer;
+    transition: filter 200ms ease;
+  }
+  .table-base tbody tr:hover td {
+    background-color: var(--bg-3);
+  }
+  .table-base tbody tr:hover {
+    position: relative;
+    z-index: 2;
+    filter: drop-shadow(0 5px 14px rgba(0,0,0,.38));
+  }
+
+  /* Mode focus — activé par JS après 4 s de survol immobile */
+  .table-base.table-focus-mode tbody tr:not(.row-focused) td {
+    opacity: 0.28;
+    filter: blur(1px);
+  }
+  .table-base.table-focus-mode tbody tr.row-focused {
+    filter: drop-shadow(0 10px 28px rgba(0,0,0,.55)) !important;
+    z-index: 3;
+  }
+  .table-base.table-focus-mode tbody tr.row-focused td {
+    opacity: 1 !important;
+    filter: none !important;
+    background-color: var(--bg-3);
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     BARRE SUPÉRIEURE — fond adaptatif thème
+  ───────────────────────────────────────────────────────── */
   .topbar {
     @apply sticky top-0 z-50 h-12 flex items-center px-5 gap-2.5
            backdrop-blur-xl border-b border-[var(--border-0)];
-    background-color: rgba(11, 15, 26, 0.8);
+    background-color: var(--topbar-bg);
   }
 
+  /* ─────────────────────────────────────────────────────────
+     BARRE LATÉRALE — suspension + ombre droite
+  ───────────────────────────────────────────────────────── */
   .sidebar {
-    @apply fixed inset-y-0 left-0 z-40 flex flex-col w-60
-           bg-[var(--bg-1)] border-r border-[var(--border-0)] overflow-y-auto;
+    @apply fixed inset-y-0 left-0 z-40 flex flex-col w-60 overflow-y-auto;
+    background-color: var(--sidebar-bg);
+    border-right: 1px solid var(--border-0);
+    box-shadow: var(--shadow-lg);
+    will-change: transform;
   }
 
-  .form-label { @apply text-[11px] font-semibold text-[var(--text-2)] block mb-1; }
-  .form-group { @apply flex flex-col gap-1; }
-
+  /* ─────────────────────────────────────────────────────────
+     MODALES
+  ───────────────────────────────────────────────────────── */
   .modal-overlay {
     @apply fixed inset-0 z-50 flex items-center justify-center p-5
            bg-black/70 backdrop-blur-sm;
   }
   .modal-box {
-    @apply bg-[var(--bg-2)] border border-[var(--border-2)] rounded-2xl
-           w-full shadow-2xl overflow-hidden;
+    @apply bg-[var(--bg-2)] border border-[var(--border-2)] rounded-2xl w-full overflow-hidden;
+    box-shadow: var(--shadow-xl);
   }
   .modal-header {
     @apply flex items-center justify-between px-5 py-4 border-b border-[var(--border-0)];
   }
-  .modal-body  { @apply p-5; }
+  .modal-body   { @apply p-5; }
   .modal-footer {
     @apply flex justify-end gap-2 px-5 py-3 border-t border-[var(--border-0)];
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     SQUELETTES DE CHARGEMENT
+  ───────────────────────────────────────────────────────── */
+  .skeleton {
+    @apply rounded-lg;
+    background: linear-gradient(90deg, var(--bg-3) 25%, var(--bg-4) 50%, var(--bg-3) 75%);
+    background-size: 200% 100%;
+    animation: skeleton-sweep 1.5s ease-in-out infinite;
+  }
+  @keyframes skeleton-sweep {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
   }
 }
 
@@ -180,5 +309,17 @@
   @keyframes fadeUp {
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: none; }
+  }
+  .nav-progress-bar {
+    position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 9999;
+    background: linear-gradient(90deg, #3b82f6, #a855f7);
+    transform-origin: left;
+    pointer-events: none;
+    animation: navProgress 0.9s ease-out forwards;
+  }
+  @keyframes navProgress {
+    0%  { transform: scaleX(0); opacity: 1; }
+    75% { transform: scaleX(1); opacity: 1; }
+    100%{ transform: scaleX(1); opacity: 0; }
   }
 }

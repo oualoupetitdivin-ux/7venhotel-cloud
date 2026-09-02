@@ -7,6 +7,12 @@ export default function ClientPortal() {
   const [reservations, setReservations] = useState([])
   const [loading, setLoading] = useState(true)
   const [section, setSection] = useState('dashboard')
+  // Folio d'un séjour sélectionné
+  const [resSelectionnee, setResSelectionnee] = useState(null)
+  const [folio, setFolio] = useState(null)
+  const [loadingFolio, setLoadingFolio] = useState(false)
+
+  const hotelSlug = typeof window !== 'undefined' ? localStorage.getItem('7vh_hotel_slug') || '' : ''
 
   useEffect(() => {
     const token = localStorage.getItem('7vh_client_token')
@@ -25,8 +31,21 @@ export default function ClientPortal() {
 
   const nav = [
     {id:'dashboard',label:'⊞ Tableau de bord'},{id:'reservations',label:'📋 Réservations'},
-    {id:'factures',label:'🧾 Factures'},{id:'profil',label:'👤 Profil'},{id:'offres',label:'🎁 Offres'},
+    {id:'sejours',label:'🏨 Mes séjours'},{id:'factures',label:'🧾 Factures'},
+    {id:'profil',label:'👤 Profil'},{id:'offres',label:'🎁 Offres'},
   ]
+
+  async function voirFolio(res) {
+    setResSelectionnee(res)
+    setFolio(null)
+    setSection('sejours')
+    setLoadingFolio(true)
+    try {
+      const { data } = await portailClientAPI.folio(res.id)
+      setFolio(data)
+    } catch { setFolio(null) }
+    finally { setLoadingFolio(false) }
+  }
 
   function logout() {
     localStorage.removeItem('7vh_client_token')
@@ -65,7 +84,7 @@ export default function ClientPortal() {
           ))}
         </nav>
         <div className="p-3 border-t border-white/5 space-y-1">
-          <a href="/booking" className="block w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-2 px-3 rounded-lg text-center transition-colors">＋ Réserver</a>
+          <a href={hotelSlug ? `/booking/${hotelSlug}` : '/booking'} className="block w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-2 px-3 rounded-lg text-center transition-colors">＋ Réserver</a>
           <button onClick={logout} className="w-full text-xs text-gray-500 hover:text-white py-1.5 transition-colors">⎋ Déconnexion</button>
         </div>
       </div>
@@ -84,8 +103,23 @@ export default function ClientPortal() {
                 </div>
               ))}
             </div>
+            {/* Mon folio actuel — si une réservation arrivee existe */}
+            {(() => {
+              const resActive = reservations.find(r => r.statut === 'arrivee')
+              if (!resActive) return null
+              return (
+                <div className="mt-4 bg-gradient-to-r from-emerald-900/20 to-teal-900/20 border border-emerald-500/20 rounded-2xl p-5 flex items-center gap-4">
+                  <span className="text-4xl">🧾</span>
+                  <div className="flex-1">
+                    <div className="text-sm font-bold text-white mb-1">Mon folio actuel</div>
+                    <div className="text-xs text-gray-400">Chambre {resActive.numero_chambre || resActive.type_chambre} · Voir vos charges en cours</div>
+                  </div>
+                  <button onClick={() => voirFolio(resActive)} className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition-colors">Voir le folio →</button>
+                </div>
+              )
+            })()}
             {/* Check-in en ligne */}
-            <div className="bg-gradient-to-r from-blue-900/30 to-purple-900/20 border border-blue-500/20 rounded-2xl p-5 flex items-center gap-4">
+            <div className="mt-4 bg-gradient-to-r from-blue-900/30 to-purple-900/20 border border-blue-500/20 rounded-2xl p-5 flex items-center gap-4">
               <span className="text-4xl">📲</span>
               <div className="flex-1">
                 <div className="text-sm font-bold text-white mb-1">Check-in en ligne disponible</div>
@@ -116,9 +150,123 @@ export default function ClientPortal() {
               <div className="text-center py-12 text-gray-500">
                 <div className="text-4xl mb-4">📋</div>
                 <div className="font-bold mb-2">Aucune réservation</div>
-                <a href="/booking" className="text-blue-400 text-sm">Réserver maintenant →</a>
+                <a href={hotelSlug ? `/booking/${hotelSlug}` : '/booking'} className="text-blue-400 text-sm">Réserver maintenant →</a>
               </div>
             )}
+          </div>
+        )}
+
+        {section === 'sejours' && (
+          <div className="flex gap-6 h-full">
+            {/* Liste des séjours */}
+            <div className="w-80 flex-shrink-0">
+              <h1 className="text-xl font-black text-white mb-4">🏨 Mes séjours</h1>
+              {reservations.length ? reservations.map(r => (
+                <button key={r.id} onClick={() => voirFolio(r)}
+                  className={`w-full text-left bg-[#111827] border rounded-2xl p-4 mb-2 transition-all ${resSelectionnee?.id===r.id?'border-blue-500/50 bg-blue-900/10':'border-white/10 hover:border-white/20'}`}>
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">🛏</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-bold text-white text-xs truncate">{r.type_chambre || 'Chambre ' + r.numero_chambre}</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5">{r.date_arrivee} → {r.date_depart}</div>
+                      <span className={`inline-block mt-1 text-[9px] font-bold px-1.5 py-0.5 rounded-full ${r.statut==='arrivee'?'bg-emerald-500/20 text-emerald-400':r.statut==='confirmee'?'bg-blue-500/20 text-blue-400':'bg-gray-500/20 text-gray-400'}`}>{r.statut}</span>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <div className="text-xs font-black text-white">{(r.total_general||0).toLocaleString('fr-FR')}</div>
+                      <div className="text-[9px] text-gray-600">{r.devise||'XAF'}</div>
+                    </div>
+                  </div>
+                </button>
+              )) : (
+                <div className="text-center py-8 text-gray-500">
+                  <div className="text-3xl mb-3">🏨</div>
+                  <div className="text-sm">Aucun séjour</div>
+                  <a href={hotelSlug ? `/booking/${hotelSlug}` : '/booking'} className="text-blue-400 text-xs mt-2 block">Réserver →</a>
+                </div>
+              )}
+            </div>
+
+            {/* Folio du séjour sélectionné */}
+            <div className="flex-1">
+              {!resSelectionnee && (
+                <div className="flex items-center justify-center h-64 text-gray-500">
+                  <div className="text-center">
+                    <div className="text-4xl mb-3">👈</div>
+                    <div className="text-sm">Sélectionnez un séjour pour voir le folio</div>
+                  </div>
+                </div>
+              )}
+              {resSelectionnee && (
+                <div>
+                  <div className="flex items-center gap-3 mb-4">
+                    <div>
+                      <h2 className="text-base font-black text-white">{resSelectionnee.type_chambre || 'Chambre ' + resSelectionnee.numero_chambre}</h2>
+                      <div className="text-xs text-gray-400">{resSelectionnee.numero_reservation} · {resSelectionnee.date_arrivee} → {resSelectionnee.date_depart}</div>
+                    </div>
+                  </div>
+                  {loadingFolio && (
+                    <div className="flex items-center justify-center py-12">
+                      <div className="w-6 h-6 border-2 border-gray-700 border-t-blue-500 rounded-full animate-spin"/>
+                    </div>
+                  )}
+                  {!loadingFolio && folio && (
+                    <div>
+                      {/* En-tête folio */}
+                      <div className="bg-[#111827] border border-white/10 rounded-2xl p-4 mb-3">
+                        <div className="flex justify-between items-center mb-3">
+                          <div>
+                            <div className="text-xs text-gray-500">Folio {folio.folio?.numero_folio || '—'}</div>
+                            <span className={`text-[9.5px] font-bold px-2 py-0.5 rounded-full ${folio.folio?.statut==='ouvert'?'bg-emerald-500/20 text-emerald-400':'bg-gray-500/20 text-gray-400'}`}>{folio.folio?.statut||'—'}</span>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-[10px] text-gray-500 mb-0.5">Solde dû</div>
+                            <div className={`text-xl font-black ${folio.solde > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>{(folio.solde||0).toLocaleString('fr-FR')} <span className="text-sm">{resSelectionnee.devise||'XAF'}</span></div>
+                          </div>
+                        </div>
+                        {/* Barres charges vs paiements */}
+                        {folio.lignes?.length > 0 && (
+                          <div className="space-y-1">
+                            {folio.lignes.filter(l=>!l.annulee).map(l => (
+                              <div key={l.id} className="flex items-center justify-between py-1.5 border-b border-white/5 last:border-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm">{l.source_module==='restaurant'?'🍽':l.source_module==='menage'?'🧹':'🛏'}</span>
+                                  <div>
+                                    <div className="text-xs text-white">{l.description || l.type_ligne}</div>
+                                    <div className="text-[9px] text-gray-500">{new Date(l.cree_le).toLocaleDateString('fr-FR')}</div>
+                                  </div>
+                                </div>
+                                <div className="text-xs font-bold text-white">{parseFloat(l.montant||0).toLocaleString('fr-FR')} {resSelectionnee.devise||'XAF'}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {!folio.lignes?.length && (
+                          <div className="text-center py-4 text-gray-600 text-xs">Aucune charge pour l&apos;instant</div>
+                        )}
+                      </div>
+                      {/* Paiements */}
+                      {folio.paiements?.length > 0 && (
+                        <div className="bg-[#111827] border border-emerald-500/20 rounded-2xl p-4">
+                          <div className="text-xs font-bold text-emerald-400 mb-2">✓ Paiements reçus</div>
+                          {folio.paiements.map(p => (
+                            <div key={p.id} className="flex justify-between items-center py-1.5 border-b border-white/5 last:border-0">
+                              <div className="text-xs text-gray-300">{p.type_paiement} · {new Date(p.cree_le).toLocaleDateString('fr-FR')}</div>
+                              <div className="text-xs font-bold text-emerald-400">−{parseFloat(p.montant||0).toLocaleString('fr-FR')}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {!loadingFolio && !folio?.folio && (
+                    <div className="bg-[#111827] border border-white/10 rounded-2xl p-8 text-center text-gray-500">
+                      <div className="text-3xl mb-2">🧾</div>
+                      <div className="text-sm">Aucun folio disponible pour ce séjour</div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

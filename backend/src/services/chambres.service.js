@@ -251,6 +251,7 @@ function createChambresService({ db, cache }) {
           champs.hors_service = true
         } else if (champs.hors_service === false && chambre.statut === 'hors_service') {
           champs.statut = 'libre_propre'
+          champs.hors_service_raison = null
         }
 
         mis = await repo.mettreAJour(id, hotelId, champs, trx)
@@ -261,7 +262,7 @@ function createChambresService({ db, cache }) {
     },
 
     // ── Désactiver (soft delete) ─────────────────────────────────────────────
-    async desactiver(id, hotelId) {
+    async desactiver(id, hotelId, raison) {
       await db.transaction(async (trx) => {
         const chambre = await repo.trouverParId(id, hotelId, trx)
         if (!chambre) throw new NotFoundError('Chambre', id)
@@ -285,7 +286,7 @@ function createChambresService({ db, cache }) {
 
         await repo.mettreAJour(id, hotelId, {
           hors_service:        true,
-          hors_service_raison: 'Chambre désactivée',
+          hors_service_raison: raison || 'Chambre désactivée',
           statut:              'hors_service',
         }, trx)
       })

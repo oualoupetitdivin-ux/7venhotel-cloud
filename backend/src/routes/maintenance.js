@@ -1,7 +1,11 @@
 'use strict'
 module.exports = async function maintenanceRoutes(fastify) {
-  const pre = [fastify.authentifier, fastify.contexteHotel]
-  fastify.get('/tickets', { preHandler: pre }, async (req, reply) => {
+  const pre      = [fastify.authentifier, fastify.contexteHotel]
+  const preRead   = [...pre, fastify.verifierPermission('maintenance.lire')]
+  const preCreate = [...pre, fastify.verifierPermission('maintenance.creer')]
+  const preModif  = [...pre, fastify.verifierPermission('maintenance.modifier')]
+
+  fastify.get('/tickets', { preHandler: preRead }, async (req, reply) => {
     const { statut, priorite } = req.query
     let q = fastify.db('tickets_maintenance AS t')
       .leftJoin('chambres AS ch','ch.id','t.chambre_id')
@@ -13,7 +17,8 @@ module.exports = async function maintenanceRoutes(fastify) {
     const tickets = await q.orderBy('t.priorite','desc').orderBy('t.cree_le','desc')
     reply.send({ tickets })
   })
-  fastify.post('/tickets', { preHandler: pre }, async (req, reply) => {
+
+  fastify.post('/tickets', { preHandler: preCreate }, async (req, reply) => {
     const [ticket] = await fastify.db('tickets_maintenance').insert({
       ...req.body, hotel_id: req.hotelId, signale_par: req.user.id
     }).returning('*')
@@ -23,7 +28,8 @@ module.exports = async function maintenanceRoutes(fastify) {
     }
     reply.status(201).send({ message: 'Ticket créé', ticket })
   })
-  fastify.put('/tickets/:id', { preHandler: pre }, async (req, reply) => {
+
+  fastify.put('/tickets/:id', { preHandler: preModif }, async (req, reply) => {
     const updates = { ...req.body }
     if (req.body.statut === 'en_cours') updates.heure_debut = fastify.db.fn.now()
     if (req.body.statut === 'resolu') {
@@ -39,7 +45,8 @@ module.exports = async function maintenanceRoutes(fastify) {
     if (!updated) return reply.status(404).send({ erreur: 'Ticket introuvable' })
     reply.send({ message: 'Ticket mis à jour', ticket: updated })
   })
-  fastify.get('/tickets/:id', { preHandler: pre }, async (req, reply) => {
+
+  fastify.get('/tickets/:id', { preHandler: preRead }, async (req, reply) => {
     const ticket = await fastify.db('tickets_maintenance AS t')
       .leftJoin('chambres AS ch','ch.id','t.chambre_id')
       .where({ 't.id': req.params.id, 't.hotel_id': req.hotelId }).first()

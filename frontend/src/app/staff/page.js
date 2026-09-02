@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 import { useState, useEffect } from 'react'
 import AppLayout from '@/components/layout/AppLayout'
 import { utilisateursAPI } from '@/lib/api'
@@ -20,7 +20,7 @@ export default function StaffPage() {
     try {
       setLoading(true)
       const res = await utilisateursAPI.lister()
-      setStaff(res.data.data || [])
+      setStaff(res.data.utilisateurs || [])
     } catch { toast.error('Erreur chargement personnel') }
     finally { setLoading(false) }
   }
@@ -33,7 +33,14 @@ export default function StaffPage() {
       setShowForm(false)
       setForm({ prenom:'', nom:'', email:'', role:'reception', mot_de_passe:'demo123' })
       charger()
-    } catch { toast.error('Erreur création utilisateur') }
+    } catch (err) {
+      const msg = err?.response?.data?.erreur || err?.message || ''
+      if (msg.includes('dupliquée') || msg.includes('unique') || err?.response?.status === 409) {
+        toast.error('Cet email est déjà utilisé')
+      } else {
+        toast.error('Erreur création utilisateur')
+      }
+    }
   }
 
   async function toggleActif(id, actif) {
@@ -55,9 +62,9 @@ export default function StaffPage() {
       <div className="space-y-5">
         {/* KPIs */}
         <div className="grid grid-cols-3 gap-3">
-          <div className="kpi-card border-b-2 border-blue-500"><div className="kpi-label">Total staff</div><div className="kpi-value">{stats.total}</div></div>
-          <div className="kpi-card border-b-2 border-emerald-500"><div className="kpi-label">Actifs</div><div className="kpi-value text-emerald-400">{stats.actifs}</div></div>
-          <div className="kpi-card border-b-2 border-purple-500"><div className="kpi-label">Management</div><div className="kpi-value text-purple-400">{stats.managers}</div></div>
+          <div className="kpi-card"><div className="kpi-label">Total staff</div><div className="kpi-value">{stats.total}</div></div>
+          <div className="kpi-card"><div className="kpi-label">Actifs</div><div className="kpi-value text-emerald-400">{stats.actifs}</div></div>
+          <div className="kpi-card"><div className="kpi-label">Management</div><div className="kpi-value text-purple-400">{stats.managers}</div></div>
         </div>
 
         {/* En-tête */}
@@ -91,8 +98,8 @@ export default function StaffPage() {
         {/* Liste */}
         <div className="card overflow-hidden">
           {loading ? (
-            <div className="flex items-center justify-center h-40">
-              <div className="w-7 h-7 border-2 border-[var(--border-1)] border-t-blue-500 rounded-full animate-spin" />
+            <div className="p-4 space-y-2">
+              {[...Array(5)].map((_,i) => <div key={i} className="skeleton h-10 rounded-lg" />)}
             </div>
           ) : (
             <table className="w-full text-xs">

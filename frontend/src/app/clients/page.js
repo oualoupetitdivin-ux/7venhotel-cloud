@@ -1,23 +1,25 @@
 'use client'
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import AppLayout from '@/components/layout/AppLayout'
 import { clientsAPI } from '@/lib/api'
 import toast from 'react-hot-toast'
 
 export default function ClientsPage() {
+  const router = useRouter()
   const [clients, setClients]   = useState([])
   const [total, setTotal]       = useState(0)
   const [loading, setLoading]   = useState(true)
   const [search, setSearch]     = useState('')
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm]         = useState({ prenom:'', nom:'', email:'', telephone:'', pays:'Cameroun', segment:'regular' })
+  const [form, setForm]         = useState({ prenom:'', nom:'', email:'', telephone:'', pays_residence:'Cameroun', segment:'standard' })
 
-  useEffect(() => { charger() }, [])
+  useEffect(() => { charger() }, [search])
 
   async function charger() {
     try {
       setLoading(true)
-      const res = await clientsAPI.lister({ search: search || undefined })
+      const res = await clientsAPI.lister({ q: search || undefined })
       setClients(res.data.data || [])
       setTotal(res.data.pagination?.total || 0)
     } catch { toast.error('Erreur chargement clients') }
@@ -30,7 +32,7 @@ export default function ClientsPage() {
       await clientsAPI.creer(form)
       toast.success('Client créé !')
       setShowForm(false)
-      setForm({ prenom:'', nom:'', email:'', telephone:'', pays:'Cameroun', segment:'regular' })
+      setForm({ prenom:'', nom:'', email:'', telephone:'', pays_residence:'Cameroun', segment:'regular' })
       charger()
     } catch { toast.error('Erreur création client') }
   }
@@ -43,9 +45,7 @@ export default function ClientsPage() {
           <div className="flex gap-2 flex-1">
             <input type="text" placeholder="Rechercher un client..." value={search}
               onChange={e => setSearch(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && charger()}
               className="input flex-1 max-w-xs" />
-            <button onClick={charger} className="btn btn-ghost btn-sm">🔍 Rechercher</button>
           </div>
           <div className="flex gap-2">
             <button onClick={charger} className="btn btn-ghost btn-sm">↻</button>
@@ -76,11 +76,12 @@ export default function ClientsPage() {
               </div>
               <div>
                 <label className="form-label">Pays</label>
-                <input className="input" value={form.pays} onChange={e => setForm({...form, pays: e.target.value})} />
+                <input className="input" value={form.pays_residence} onChange={e => setForm({...form, pays_residence: e.target.value})} />
               </div>
               <div>
                 <label className="form-label">Segment</label>
                 <select className="input" value={form.segment} onChange={e => setForm({...form, segment: e.target.value})}>
+                  <option value="standard">Standard</option>
                   <option value="regular">Regular</option>
                   <option value="VIP">VIP</option>
                   <option value="corporate">Corporate</option>
@@ -100,8 +101,8 @@ export default function ClientsPage() {
             <div className="card-title">Clients <span className="text-[var(--text-3)] font-normal ml-2 text-xs">{total} au total</span></div>
           </div>
           {loading ? (
-            <div className="flex items-center justify-center h-40">
-              <div className="w-7 h-7 border-2 border-[var(--border-1)] border-t-blue-500 rounded-full animate-spin" />
+            <div className="p-4 space-y-2">
+              {[...Array(6)].map((_,i) => <div key={i} className="skeleton h-10 rounded-lg" />)}
             </div>
           ) : clients.length === 0 ? (
             <div className="p-10 text-center text-xs text-[var(--text-3)]">
@@ -118,11 +119,13 @@ export default function ClientsPage() {
                   <th className="text-left px-4 py-3 text-[var(--text-3)] font-medium">Pays</th>
                   <th className="text-left px-4 py-3 text-[var(--text-3)] font-medium">Segment</th>
                   <th className="text-left px-4 py-3 text-[var(--text-3)] font-medium">Fidélité</th>
+                  <th className="text-left px-4 py-3 text-[var(--text-3)] font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {clients.map(c => (
-                  <tr key={c.id} className="border-b border-[var(--border-1)] hover:bg-[var(--bg-2)]">
+                  <tr key={c.id} onClick={() => router.push(`/clients/${c.id}`)}
+                    className="border-b border-[var(--border-1)] hover:bg-[var(--bg-2)] cursor-pointer">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0">
@@ -137,13 +140,17 @@ export default function ClientsPage() {
                       <div className="text-[var(--text-2)]">{c.email || '—'}</div>
                       <div className="text-[var(--text-3)]">{c.telephone || '—'}</div>
                     </td>
-                    <td className="px-4 py-3 text-[var(--text-2)]">{c.pays || '—'}</td>
+                    <td className="px-4 py-3 text-[var(--text-2)]">{c.pays_residence || '—'}</td>
                     <td className="px-4 py-3">
                       <span className={`badge ${c.segment === 'VIP' ? 'badge-purple' : c.segment === 'corporate' ? 'badge-blue' : 'badge-gray'}`}>
                         {c.segment === 'VIP' ? '⭐ VIP' : c.segment}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-[var(--text-2)]">{c.points_fidelite || 0} pts</td>
+                    <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                      <button onClick={() => router.push(`/clients/${c.id}`)}
+                        className="btn btn-ghost btn-sm text-[10px]">Voir / Modifier</button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

@@ -113,7 +113,7 @@ INSTRUCTIONS :
 
     try {
       const response = await anthropic.messages.create({
-        model:      process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
+        model:      process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
         max_tokens: parseInt(process.env.AI_MAX_TOKENS) || 1000,
         system:     systemPrompt,
         messages
@@ -144,7 +144,7 @@ INSTRUCTIONS :
   })
 
   // ── POST /ai/analyser ─────────────────────────────────────────────
-  fastify.post('/analyser', { preHandler: pre }, async (request, reply) => {
+  fastify.post('/analyser', { preHandler: [...pre, fastify.verifierPermission('analytics.lire')] }, async (request, reply) => {
     const { type } = request.body || {}
     const ctx = await getContexteHotel(request.hotelId)
 
@@ -164,7 +164,7 @@ INSTRUCTIONS :
     }
 
     const response = await anthropic.messages.create({
-      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
+      model: process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 1500,
       system: `Tu es Ouwalou AI, assistant hôtelier expert. Données: ${JSON.stringify(ctx)}. Réponds en français avec format Markdown.`,
       messages: [{ role: 'user', content: prompt }]
@@ -185,7 +185,7 @@ INSTRUCTIONS :
   })
 
   // ── GET /ai/recommandations ───────────────────────────────────────
-  fastify.get('/recommandations', { preHandler: pre }, async (request, reply) => {
+  fastify.get('/recommandations', { preHandler: [...pre, fastify.verifierPermission('analytics.lire')] }, async (request, reply) => {
     const recs = await fastify.db('recommandations_ia')
       .where({ hotel_id: request.hotelId, implementee: false })
       .orderBy('priorite', 'desc')
@@ -205,7 +205,7 @@ INSTRUCTIONS :
   })
 
   // ── GET /ai/previsions ────────────────────────────────────────────
-  fastify.get('/previsions', { preHandler: pre }, async (request, reply) => {
+  fastify.get('/previsions', { preHandler: [...pre, fastify.verifierPermission('analytics.lire')] }, async (request, reply) => {
     const cacheKey = `previsions:${request.hotelId}`
     const cached = await fastify.cache.get(cacheKey)
     if (cached) return reply.send(cached)

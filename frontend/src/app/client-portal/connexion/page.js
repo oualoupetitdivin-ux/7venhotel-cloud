@@ -14,6 +14,9 @@ export default function ClientConnexion() {
     try {
       const { data } = await authAPI.clientConnexion({ email, mot_de_passe: mdp })
       localStorage.setItem('7vh_client_token', data.token)
+      if (data.client?.hotel_slug) {
+        localStorage.setItem('7vh_hotel_slug', data.client.hotel_slug)
+      }
       window.location.href = '/client-portal'
     } catch { setErreur('Email ou mot de passe incorrect') }
     finally { setLoading(false) }
@@ -25,7 +28,7 @@ export default function ClientConnexion() {
         <div className="text-center mb-8">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-white text-xl font-black mx-auto mb-4">7</div>
           <h2 className="text-xl font-black text-white mb-1">Espace Client</h2>
-          <p className="text-sm text-gray-400">Hôtel Royal Yaoundé</p>
+          <p className="text-sm text-gray-400">Votre espace client</p>
         </div>
 
         <div className="bg-[#111827] border border-white/10 rounded-2xl p-5 mb-3">

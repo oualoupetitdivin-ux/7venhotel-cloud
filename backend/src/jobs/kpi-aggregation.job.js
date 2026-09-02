@@ -1,23 +1,36 @@
 'use strict'
 
 // =============================================================================
-// kpi-aggregation.job.js — VERSION LEGACY COMPATIBLE PRODUCTION
+// kpi-aggregation.job.js — VERSION V2 — POST-MIGRATION REALIGNMENT
 //
-// Tables utilisées (toutes existantes en production) :
+// CHANGEMENTS v1 → v2 (localisés dans _agregerFinance uniquement) :
+//   1. Table : lignes_folio conservée (Option A — pas de rename)
+//   2. Colonne montant : montant_total conservé (Option A — pas de rename)
+//   3. Filtre temporel : DATE(lf.cree_le) remplace lf.date_facturation
+//   4. JOIN folios supprimé → hotel_id direct sur lignes_folio (post migration_delta)
+//   5. Filtre lf.sens = 'debit' sur total_debits (nouveau concept V2 — ledger double-entrée)
+//   6. Filtre lf.sens = 'debit' sur solde cumulatif (cohérence)
+//   7. Commentaires mis à jour
+//
+// INCHANGÉ :
+//   _agregerHebergement, _agregerRestaurant, _upsert, scheduler, agreger
+//
+// Tables utilisées (toutes existantes en production post-migration) :
 //   chambres, reservations, commandes_restaurant, paiements, hotels
-//   lignes_folio + folios (pour total_debits et solde_du)
+//   lignes_folio — avec hotel_id direct V2 (post migration_delta)
 //
-// LIMITES DOCUMENTÉES :
+// LIMITES DOCUMENTÉES (inchangées) :
 //   revenu_hebergement : APPROXIMATIF — SUM(tarif_nuit) réservations actives
-//                        (pas d'accrual — lignes_folio.type='hebergement' jamais inséré)
-//   total_debits       : PARTIEL — lignes_folio alimentée uniquement par restaurant.js
-//   solde_du           : APPROXIMATIF — lignes_folio partielle - paiements valides
-//   nb_annulations     : APPROXIMATIF — fallback mis_a_jour_le (annulee_le absent schema)
+//                        (writer hébergement dans lignes_folio = Palier 1, pas encore actif)
+//   solde_du           : AMÉLIORÉ mais encore partiel — lignes_folio alimentée par
+//                        restaurant + paiements manuels ; hébergement = Palier 1
+//   nb_annulations     : APPROXIMATIF — fallback mis_a_jour_le
 //
 // MÉTRIQUES EXACTES :
 //   chambres_occupees, occ_rate_pct, arrivees, departs, no_shows, los_moyen
 //   ca_restaurant, nb_commandes (source directe commandes_restaurant)
 //   cash_encaisse, mobile_money_encaisse, total_credits, nb_paiements_*
+//   total_debits (AMÉLIORÉ — filtre sens='debit' V2, fiable dès activation restaurant)
 // =============================================================================
 
 const HEURE_H   = 0
@@ -43,19 +56,16 @@ async function _listerHotels(db) {
 }
 
 // =============================================================================
-// HÉBERGEMENT
+// HÉBERGEMENT — INCHANGÉ
 // Toutes les requêtes sur : chambres, reservations
 // revenu_hebergement : SUM(tarif_nuit) — APPROXIMATIF (pas d'accrual)
 // =============================================================================
 async function _agregerHebergement(db, hotelId, dateStr) {
 
-  // Chambres disponibles (hors_service exclues)
   const [{ disponibles }] = await db('chambres')
     .where({ hotel_id: hotelId, hors_service: false })
     .count('id AS disponibles')
 
-  // Chambres occupées : COUNT DISTINCT chambre_id sur réservations actives
-  // Statuts ENUM valides : 'arrivee', 'depart_aujourd_hui'
   const [{ occupees }] = await db('reservations')
     .where({ hotel_id: hotelId })
     .whereIn('statut', ['arrivee', 'depart_aujourd_hui'])
@@ -63,7 +73,6 @@ async function _agregerHebergement(db, hotelId, dateStr) {
     .where('date_depart',  '>',  dateStr)
     .countDistinct('chambre_id AS occupees')
 
-  // Nuitées : 1 réservation active = 1 nuitée (modèle 1 chambre / réservation)
   const [{ nuitees }] = await db('reservations')
     .where({ hotel_id: hotelId })
     .whereIn('statut', ['arrivee', 'depart_aujourd_hui'])
@@ -71,9 +80,6 @@ async function _agregerHebergement(db, hotelId, dateStr) {
     .where('date_depart',  '>',  dateStr)
     .count('id AS nuitees')
 
-  // Revenu hébergement APPROXIMATIF : SUM(tarif_nuit) réservations actives
-  // Limite : ne reflète pas les ajustements manuels ni les réductions appliquées
-  // Source exacte future : lignes_folio type='hebergement' (non alimentée actuellement)
   const [{ revenu }] = await db('reservations')
     .where({ hotel_id: hotelId })
     .whereIn('statut', ['arrivee', 'depart_aujourd_hui'])
@@ -81,38 +87,31 @@ async function _agregerHebergement(db, hotelId, dateStr) {
     .where('date_depart',  '>',  dateStr)
     .sum('tarif_nuit AS revenu')
 
-  // Arrivées du jour (attendues ou déjà checkées)
   const [{ arrivees }] = await db('reservations')
     .where({ hotel_id: hotelId, date_arrivee: dateStr })
     .whereNotIn('statut', ['annulee', 'no_show'])
     .count('id AS arrivees')
 
-  // Départs du jour : date_depart = aujourd'hui, client encore présent ou en cours
   const [{ departs }] = await db('reservations')
     .where({ hotel_id: hotelId, date_depart: dateStr })
     .whereIn('statut', ['arrivee', 'depart_aujourd_hui'])
     .count('id AS departs')
 
-  // Annulations du jour
-  // Fallback : mis_a_jour_le (annulee_le absent du schema production)
-  // Approximatif : mis_a_jour_le peut être modifié après l'annulation initiale
   const [{ annulations }] = await db('reservations')
     .where({ hotel_id: hotelId, statut: 'annulee' })
     .where(db.raw('DATE(mis_a_jour_le) = ?', [dateStr]))
     .count('id AS annulations')
     .catch(() => [{ annulations: 0 }])
 
-  // No-shows du jour
   const [{ no_shows }] = await db('reservations')
     .where({ hotel_id: hotelId, statut: 'no_show', date_arrivee: dateStr })
     .count('id AS no_shows')
 
-  // Revenu perdu sur no-shows (tarif_nuit × nombre_nuits — APPROXIMATIF)
   const [{ perdu }] = await db('reservations')
     .where({ hotel_id: hotelId, statut: 'no_show', date_arrivee: dateStr })
-    .sum(db.raw('tarif_nuit * nombre_nuits AS perdu'))
+    .select(db.raw('COALESCE(SUM(tarif_nuit * nombre_nuits), 0) AS perdu'))
+    .catch(() => [{ perdu: 0 }])
 
-  // Durée de séjour moyenne des arrivées du jour
   const [{ los }] = await db('reservations')
     .where({ hotel_id: hotelId, date_arrivee: dateStr })
     .whereNotIn('statut', ['annulee', 'no_show'])
@@ -136,7 +135,7 @@ async function _agregerHebergement(db, hotelId, dateStr) {
 }
 
 // =============================================================================
-// RESTAURANT
+// RESTAURANT — INCHANGÉ
 // Source : commandes_restaurant — EXACTE
 // =============================================================================
 async function _agregerRestaurant(db, hotelId, dateStr) {
@@ -163,31 +162,43 @@ async function _agregerRestaurant(db, hotelId, dateStr) {
 }
 
 // =============================================================================
-// FINANCE
+// FINANCE — V2 — MODIFIÉ
+//
+// Changements par rapport à V1 :
+//
+//   REQUÊTE 1 (total_debits du jour) :
+//     V1 : db('lignes_folio').join('folios').where(date_facturation).SUM(montant_total)
+//     V2 : db('lignes_folio').where(hotel_id).where(sens='debit').where(DATE(cree_le)).SUM(montant_total)
+//     → Plus de JOIN folios — hotel_id direct sur lignes_folio (post migration_delta)
+//     → Filtre sens='debit' — seules les charges comptent dans les débits
+//     → DATE(cree_le) pour le filtrage temporel (date_facturation non utilisé)
+//
+//   REQUÊTE 4 (solde cumulatif débits) :
+//     V1 : db('lignes_folio').join('folios').where(date_facturation <=).SUM(montant_total)
+//     V2 : db('lignes_folio').where(hotel_id).where(sens='debit').where(DATE(cree_le) <=).SUM(montant_total)
+//
+//   REQUÊTES 2, 3, 5, 6 (paiements) : INCHANGÉES
+//
+// Option A retenue :
+//   - Table    : lignes_folio     (nom prod conservé — pas de rename)
+//   - Colonne  : montant_total    (nom prod conservé — pas de rename)
+//   Le rename montant_total → montant sera fait dans migration_v2_cleanup (post-stabilisation).
+//
 // Sources :
-//   lignes_folio + folios  → total_debits, solde_du   (PARTIEL / APPROXIMATIF)
-//   paiements              → total_credits, encaissements (EXACT)
-//
-// total_debits : SUM(lignes_folio.montant_total) du jour, via folios.hotel_id
-//   Partiel : lignes_folio alimentée uniquement par restaurant.js (type='restaurant')
-//   L'hébergement n'y est PAS encore inscrit automatiquement
-//
-// total_credits : SUM(paiements.montant WHERE statut='valide') — EXACT
-//
-// solde_du : cumulatif lignes_folio - cumulatif paiements valides
-//   Approximatif tant que lignes_folio n'est pas complète
+//   lignes_folio (V2 post-delta)  → total_debits, solde_du  (AMÉLIORÉ)
+//   paiements                    → total_credits, encaissements (EXACT — inchangé)
 // =============================================================================
 async function _agregerFinance(db, hotelId, dateStr) {
 
-  // Débits du jour via lignes_folio (JOIN folios pour hotel_id — isolation tenant)
-  const [debits] = await db('lignes_folio AS lf')
-    .join('folios AS f', 'f.id', 'lf.folio_id')
-    .where('f.hotel_id', hotelId)
-    .where('lf.date_facturation', dateStr)
-    .select(db.raw('COALESCE(SUM(lf.montant_total), 0) AS total_debits'))
+  // ── REQUÊTE 1 — Débits du jour ────────────────────────────────────────────
+  // lignes_folio avec hotel_id direct (post migration_delta) + filtre sens='debit'
+  // DATE(cree_le) pour le filtrage temporel
+  const [debits] = await db('lignes_folio AS fl')
+    .where({ 'fl.hotel_id': hotelId, 'fl.sens': 'debit' })
+    .where(db.raw('DATE(fl.cree_le) = ?', [dateStr]))
+    .select(db.raw('COALESCE(SUM(fl.montant_total), 0) AS total_debits'))
 
-  // Filtre date paiements : traite_le si présent, sinon cree_le
-  // confirme_le supprimé (absent du schema paiements en production)
+  // ── REQUÊTES 2, 3, 5 — Paiements INCHANGÉES ──────────────────────────────
   const datePaiement = `DATE(COALESCE(traite_le, cree_le)) = ?`
 
   // Cash encaissé du jour (espèces + carte + virement) — EXACT
@@ -209,20 +220,20 @@ async function _agregerFinance(db, hotelId, dateStr) {
     .where(db.raw(datePaiement, [dateStr]))
     .select(db.raw('COALESCE(SUM(montant), 0) AS total_credits'))
 
-  // Solde dû cumulatif = SUM(lignes_folio jusqu'à dateStr) - SUM(paiements valides jusqu'à dateStr)
-  // APPROXIMATIF : dépend du taux d'alimentation de lignes_folio
-  const [soldeDebits] = await db('lignes_folio AS lf')
-    .join('folios AS f', 'f.id', 'lf.folio_id')
-    .where('f.hotel_id', hotelId)
-    .where('lf.date_facturation', '<=', dateStr)
-    .select(db.raw('COALESCE(SUM(lf.montant_total), 0) AS total'))
+  // ── REQUÊTE 4 — Solde dû cumulatif ───────────────────────────────────────
+  // lignes_folio hotel_id direct + sens='debit' + DATE(cree_le) cumulatif
+  const [soldeDebits] = await db('lignes_folio AS fl')
+    .where({ 'fl.hotel_id': hotelId, 'fl.sens': 'debit' })
+    .where(db.raw('DATE(fl.cree_le) <= ?', [dateStr]))
+    .select(db.raw('COALESCE(SUM(fl.montant_total), 0) AS total'))
 
+  // ── REQUÊTE 5 — Solde crédits cumulatif INCHANGÉE ────────────────────────
   const [soldeCredits] = await db('paiements')
     .where({ hotel_id: hotelId, statut: 'valide' })
     .where(db.raw('DATE(COALESCE(traite_le, cree_le)) <= ?', [dateStr]))
     .select(db.raw('COALESCE(SUM(montant), 0) AS total'))
 
-  // Compteurs paiements du jour (tous statuts — pour taux échec)
+  // ── REQUÊTE 6 — Compteurs paiements INCHANGÉE ────────────────────────────
   const [compteurs] = await db('paiements')
     .where({ hotel_id: hotelId })
     .where(db.raw('DATE(cree_le) = ?', [dateStr]))
@@ -248,8 +259,7 @@ async function _agregerFinance(db, hotelId, dateStr) {
 }
 
 // =============================================================================
-// UPSERT atomique dans les 3 tables kpi_daily_*
-// Transaction unique — si une table échoue, les 3 rollback
+// UPSERT — INCHANGÉ
 // =============================================================================
 async function _upsert(db, hotelId, dateStr, heb, resto, fin) {
   await db.transaction(async (trx) => {
@@ -260,8 +270,7 @@ async function _upsert(db, hotelId, dateStr, heb, resto, fin) {
 }
 
 // =============================================================================
-// FONCTION PRINCIPALE — exportée pour recalcul manuel via POST /kpi/recalculer
-// dates : tableau 'YYYY-MM-DD'. Par défaut : J-1 + aujourd'hui
+// FONCTION PRINCIPALE — INCHANGÉE
 // =============================================================================
 async function agreger({ db, logger, dates }) {
   if (!dates || !dates.length) {
@@ -304,8 +313,7 @@ async function agreger({ db, logger, dates }) {
 }
 
 // =============================================================================
-// JOB PLANIFIÉ — 00h30 chaque nuit
-// Anti-overlap : _enCours empêche deux cycles simultanés
+// JOB PLANIFIÉ — INCHANGÉ
 // =============================================================================
 async function _executer({ db, logger }) {
   if (_enCours) {

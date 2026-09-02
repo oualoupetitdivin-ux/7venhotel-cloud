@@ -10,7 +10,7 @@
 //   • Pas de dépendance axios — fetch natif, contrôlable
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = (process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:3001') + '/api/v1/platform'
+const BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1') + '/platform'
 const TIMEOUT_MS = 10_000
 
 let _logoutCallback = null

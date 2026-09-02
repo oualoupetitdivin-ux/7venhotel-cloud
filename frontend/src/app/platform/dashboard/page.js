@@ -323,7 +323,7 @@ export default function PlatformCockpit() {
             </button>
             {isNetwork && (
               <div className="text-[10px] text-[var(--text-4)] self-center">
-                Vérifiez que le backend est démarré sur le port 3001
+                Vérifiez que le service backend est opérationnel
               </div>
             )}
           </div>

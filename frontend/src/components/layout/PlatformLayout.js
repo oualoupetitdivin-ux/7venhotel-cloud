@@ -45,8 +45,8 @@ function ImpersonationBanner() {
     if (!session || !confirm(`Terminer l'impersonation de "${session.tenant}" ?`)) return
     setTerminating(true)
     try {
-      const API = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:3001'
-      await fetch(`${API}/api/v1/platform/iam/impersonate/${session.sessionId}`, {
+      const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1'
+      await fetch(`${API}/platform/iam/impersonate/${session.sessionId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -306,11 +306,11 @@ export default function PlatformLayout({ children, titre, sousTitre }) {
 
   // Polling santé backend (légère, 60s)
   useEffect(() => {
-    const API = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:3001'
+    const BACKEND = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1').replace(/\/api\/v\d.*$/, '')
     const token = localStorage.getItem('7vh_token')
     if (!token) return
     const check = () =>
-      fetch(`${API}/health`).then(r => r.json()).then(d => setHealth(d.statut)).catch(() => setHealth('error'))
+      fetch(`${BACKEND}/health`).then(r => r.json()).then(d => setHealth(d.statut)).catch(() => setHealth('error'))
     check()
     const iv = setInterval(check, 60_000)
     return () => clearInterval(iv)

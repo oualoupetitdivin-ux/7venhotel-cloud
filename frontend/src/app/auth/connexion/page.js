@@ -5,15 +5,6 @@ import toast from 'react-hot-toast'
 import { authAPI } from '@/lib/api'
 import { useAuthStore, resolvePostLoginDestination } from '@/lib/utils'
 
-const COMPTES_DEMO = [
-  { email: 'superadmin@demo.com',   mdp: 'Admin2026!', role: 'Super Admin',  couleur: '#8B5CF6', icone: '⚙' },
-  { email: 'manager@demo.com',      mdp: 'Demo2024!',  role: 'Manager',       couleur: '#3B82F6', icone: '🏨' },
-  { email: 'reception@demo.com',    mdp: 'Demo2024!',  role: 'Réception',     couleur: '#10B981', icone: '🔑' },
-  { email: 'housekeeping@demo.com', mdp: 'Demo2024!',  role: 'Housekeeping',  couleur: '#F59E0B', icone: '🧹' },
-  { email: 'restaurant@demo.com',   mdp: 'Demo2024!',  role: 'Restaurant',    couleur: '#F97316', icone: '🍽' },
-  { email: 'accounting@demo.com',   mdp: 'Demo2024!',  role: 'Comptabilité',  couleur: '#06B6D4', icone: '💳' },
-]
-
 export default function ConnexionPage() {
   const router = useRouter()
   const setSession = useAuthStore(s => s.setSession)
@@ -45,10 +36,6 @@ export default function ConnexionPage() {
     } catch (err) {
       setErreur(err.response?.data?.erreur || 'Identifiants incorrects')
     } finally { setLoading(false) }
-  }
-
-  function remplirDemo(compte) {
-    setEmail(compte.email); setMdp(compte.mdp); setErreur('')
   }
 
   return (
@@ -103,24 +90,6 @@ export default function ConnexionPage() {
           <h2 className="text-xl font-black mb-1">Connexion</h2>
           <p className="text-xs text-[var(--text-3)] mb-6">Accédez à votre espace de gestion</p>
 
-          {/* Comptes démo */}
-          <div className="bg-[var(--bg-2)] border border-[var(--border-1)] rounded-xl p-3 mb-5">
-            <div className="text-[9.5px] font-bold uppercase tracking-widest text-[var(--text-3)] mb-2">🚀 Comptes démo</div>
-            <div className="space-y-0.5">
-              {COMPTES_DEMO.map(d => (
-                <button key={d.email} onClick={() => remplirDemo(d)}
-                  className="w-full flex items-center gap-2 p-1.5 rounded-lg hover:bg-[var(--bg-3)] transition-colors text-left">
-                  <span className="text-sm">{d.icone}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[10px] font-bold uppercase tracking-wide" style={{ color: d.couleur }}>{d.role}</div>
-                    <div className="text-[10px] text-[var(--text-3)] font-mono truncate">{d.email}</div>
-                  </div>
-                  <span className="text-[var(--text-4)] text-xs">→</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
           {erreur && (
             <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-xs px-3 py-2 rounded-lg mb-4">
               {erreur}
@@ -130,7 +99,7 @@ export default function ConnexionPage() {
           <form onSubmit={handleSubmit} className="space-y-3">
             <div className="form-group">
               <label className="form-label">Adresse email</label>
-              <input className="input" type="email" placeholder="email@demo.com"
+              <input className="input" type="email" placeholder="votre@email.com"
                 value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" />
             </div>
             <div className="form-group">
@@ -155,9 +124,6 @@ export default function ConnexionPage() {
             </button>
           </form>
 
-          <p className="text-center mt-4 text-[10.5px] text-[var(--text-3)]">
-            Cliquez un compte pour remplir automatiquement
-          </p>
           <div className="flex items-center justify-center gap-3 mt-4 text-[10.5px] text-[var(--text-4)]">
             <a href="/booking" className="hover:text-[var(--text-2)]">Réserver en ligne</a>
             <span>·</span>

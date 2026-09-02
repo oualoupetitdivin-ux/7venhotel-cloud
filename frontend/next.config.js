@@ -1,7 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  output: 'standalone',
   images: {
     domains: ['localhost', process.env.NEXT_PUBLIC_API_URL?.replace(/https?:\/\//, '') || ''],
     remotePatterns: [

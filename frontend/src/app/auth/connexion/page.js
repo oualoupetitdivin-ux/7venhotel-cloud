@@ -68,14 +68,9 @@ export default function ConnexionPage() {
             ))}
           </div>
         </div>
-        {/* Stats */}
-        <div className="relative z-10 grid grid-cols-3 border border-white/5 rounded-xl overflow-hidden bg-white/5 backdrop-blur-sm">
-          {[['142','Chambres'],['87%','Occupation'],['2.4M','XAF/jour']].map(([val, lbl]) => (
-            <div key={lbl} className="text-center py-4 border-r border-white/5 last:border-0">
-              <div className="text-xl font-black font-mono text-blue-400">{val}</div>
-              <div className="text-[10px] text-gray-500 mt-1">{lbl}</div>
-            </div>
-          ))}
+        {/* Copyright */}
+        <div className="relative z-10 text-[10px] text-gray-600 tracking-wide">
+          © {new Date().getFullYear()} Ouwalou God Corp. Tous droits réservés.
         </div>
       </div>
 

@@ -158,7 +158,8 @@ async function registerPlugins() {
   await server.register(require('@fastify/cors'), {
     origin: corsOrigins,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Hotel-ID', 'X-Tenant-ID'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Hotel-ID', 'X-Tenant-ID', 'X-Correlation-ID'],
+    exposedHeaders: ['X-Correlation-ID'],
     credentials: true
   })
 

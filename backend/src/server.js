@@ -369,6 +369,12 @@ await server.register(async function(app) {
   await app.register(require('./routes/booking'), { prefix: '/booking' })
   await app.register(require('./routes/paiement-online.route'), { prefix: '/paiement-online' })
 
+  // ── Plateforme SaaS (super_admin uniquement) ──────────────────────
+  await app.register(require('./routes/platform.route'),           { prefix: '/platform' })
+  await app.register(require('./routes/platform.iam.route'),       { prefix: '/platform' })
+  await app.register(require('./routes/platform.config.route'),    { prefix: '/platform' })
+  await app.register(require('./routes/platform.onboarding.route'),{ prefix: '/platform' })
+
   // ─────────────────────────────────────────────────────────────────
   // Route /seed désactivée en production
   // ─────────────────────────────────────────────────────────────────

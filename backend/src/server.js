@@ -219,6 +219,9 @@ async function registerPlugins() {
   // Authentification middleware
   await server.register(require('./plugins/auth'))
 
+  // Platform Config Engine (plans, modules, flags, providers, settings)
+  await server.register(require('./engines/platform.config.engine'))
+
   // Swagger docs (développement uniquement)
   if (process.env.NODE_ENV !== 'production') {
     await server.register(require('@fastify/swagger'), {

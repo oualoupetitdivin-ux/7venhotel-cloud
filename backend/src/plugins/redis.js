@@ -255,7 +255,33 @@ async function redisPlugin(fastify) {
     },
     async exists(key) {
       try { return await redisInstance.exists(key) > 0 } catch { return false }
-    }
+    },
+    // ── Primitives d'ensemble — même contrat que le store in-memory ─────
+    // Utilisées par creerSession (index tenant → sessions) et revoquerSessionsTenant.
+    // Absentes jusqu'ici : avec Redis réel, creerSession échouait avant l'écriture
+    // sessions_actives et la révocation d'un tenant ne coupait aucune session.
+    async sadd(key, ...members) {
+      try { return await redisInstance.sadd(key, ...members) } catch { return 0 }
+    },
+    async smembers(key) {
+      try { return await redisInstance.smembers(key) } catch { return [] }
+    },
+    async expire(key, ttlSeconds) {
+      try { return await redisInstance.expire(key, ttlSeconds) === 1 } catch { return false }
+    },
+    pipeline() {
+      const pipe = redisInstance.pipeline()
+      const facade = {
+        del:    (...args) => { pipe.del(...args); return facade },
+        sadd:   (...args) => { pipe.sadd(...args); return facade },
+        srem:   (...args) => { pipe.srem(...args); return facade },
+        expire: (...args) => { pipe.expire(...args); return facade },
+        exec:   async () => {
+          try { return (await pipe.exec()).map(([err, val]) => (err ? null : val)) } catch { return [] }
+        },
+      }
+      return facade
+    },
   }
 
   fastify.decorate('redis', redisInstance)

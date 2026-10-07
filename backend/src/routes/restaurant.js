@@ -479,6 +479,17 @@ module.exports = async function restaurantRoutes(fastify) {
       if (!err.reponseAnticipee) throw err
     }
 
+    // HELICONIA-READY-02 — les lignes room service arrivent au folio : invalider le cache
+    // folio/solde (clés de facturation.service), sinon la réception voit un folio périmé ~30 s.
+    const resId = out.body?.commande?.reservation_id
+    if (nouveauStatut === 'servie' && out.code < 400 && resId) {
+      const folio = await fastify.db('folios').where({ reservation_id: resId, hotel_id: hotelId }).first('id')
+      await Promise.all([
+        fastify.cache.del(`folio:res:${hotelId}:${resId}`),
+        folio ? fastify.cache.del(`solde:${hotelId}:${folio.id}`) : null,
+      ]).catch(() => {})
+    }
+
     reply.status(out.code).send(out.body)
     if (out.code >= 400) return reply
 

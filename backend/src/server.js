@@ -226,6 +226,14 @@ async function registerPlugins() {
       root:   uploadsPath,
       prefix: '/uploads/'
     })
+    // Helmet pose Cross-Origin-Resource-Policy: same-origin sur toutes les réponses : le
+    // navigateur refusait alors d'afficher depuis le frontend (autre origine) les images de
+    // /uploads (fond d'écran hôtel, photos de chambres, aperçu du logo) —
+    // ERR_BLOCKED_BY_RESPONSE.NotSameOrigin. Fichiers publics uniquement : le reste reste same-origin.
+    server.addHook('onSend', async (request, reply, payload) => {
+      if (request.url.startsWith('/uploads/')) reply.header('Cross-Origin-Resource-Policy', 'cross-origin')
+      return payload
+    })
   } catch (e) {
     server.log.warn('Dossier uploads non disponible : ' + e.message)
   }

@@ -103,6 +103,8 @@ const PAGES_AUTORISEES = {
   '/fidelite':     ['super_admin', 'manager'],
   '/evenements':   ['super_admin', 'manager', 'reception'],
   '/analytics':    ['super_admin', 'manager', 'comptabilite'],
+  // Finance OHADA — rôles disposant de finance.lire (le backend contrôle chaque route)
+  '/finance':      ['super_admin', 'manager', 'comptabilite'],
   '/diagnostic':   ['super_admin', 'manager', 'comptabilite'],
   '/ai':           ['super_admin', 'manager'],
   '/staff':        ['super_admin', 'manager'],

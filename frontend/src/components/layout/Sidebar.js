@@ -50,6 +50,7 @@ const MENUS_PAR_ROLE = {
       { key: '/caisse',      icone: '🏧', label: 'Caisse' },
       { key: '/charges',     icone: '📑', label: 'Charges' },
       { key: '/facturation', icone: '💳', label: 'Facturation' },
+      { key: '/finance',     icone: '📒', label: 'Finance OHADA' },
       { key: '/analytics',   icone: '📊', label: 'Analytique' },
       { key: '/reporting',   icone: '📰', label: 'Reporting' },
     ]},
@@ -95,6 +96,7 @@ const MENUS_PAR_ROLE = {
       { key: '/caisse',      icone: '🏧', label: 'Caisse' },
       { key: '/charges',     icone: '📑', label: 'Charges' },
       { key: '/facturation', icone: '💳', label: 'Facturation' },
+      { key: '/finance',     icone: '📒', label: 'Finance OHADA' },
       { key: '/analytics',   icone: '📊', label: 'Analytique' },
     ]}
   ],
@@ -182,7 +184,7 @@ export default function Sidebar({ open = false, onClose } = {}) {
               {itemsVisibles.map(item => {
                 const active = pathname === item.key || pathname.startsWith(item.key + '/')
                 return (
-                  <Link key={item.key} href={item.key} onClick={() => onClose && onClose()}
+                  <Link key={item.key} href={item.key} prefetch={false} onClick={() => onClose && onClose()}
                     className={`sidebar-nav-item ${active ? 'active' : ''}`}>
                     <span className="text-sm opacity-75 w-4 text-center flex-shrink-0">{item.icone}</span>
                     <span className="flex-1">{item.label}</span>
@@ -210,7 +212,7 @@ export default function Sidebar({ open = false, onClose } = {}) {
           </div>
         </div>
         <div className="flex gap-1 mt-1">
-          <Link href="/settings" className="btn btn-ghost btn-xs flex-1 justify-center">⚙</Link>
+          <Link href="/settings" prefetch={false} className="btn btn-ghost btn-xs flex-1 justify-center">⚙</Link>
           <button onClick={handleLogout} className="btn btn-ghost btn-xs flex-1">⎋ Déco</button>
         </div>
       </div>

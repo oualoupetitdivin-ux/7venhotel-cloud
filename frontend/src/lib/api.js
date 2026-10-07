@@ -367,4 +367,21 @@ export const diagnosticAPI = {
   compute:    (ecaId) => api.post('/diagnostics', { eca_context_id: ecaId }),
 }
 
+// ── Finance OHADA (routes /finance existantes — LOT-OHADA-01) ─────────────
+export const financeAPI = {
+  exercices:    ()       => api.get('/finance/exercices'),
+  controle:     ()       => api.get('/finance/controle'),
+  journaux:     (params) => api.get('/finance/journaux', { params }),
+  planComptable:(params) => api.get('/finance/plan-comptable', { params }),
+  mappings:     ()       => api.get('/finance/mappings'),
+  ecritures:    (params) => api.get('/finance/ecritures', { params }),
+  ecriture:     (id)     => api.get(`/finance/ecritures/${id}`),
+  grandLivre:   (params) => api.get('/finance/grand-livre', { params }),
+  balance:      (params) => api.get('/finance/balance', { params }),
+  etats:        (params) => api.get('/finance/etats', { params }),
+  cloture:      (data)   => api.post('/finance/cloture', data),
+  exportJSON:   (params) => api.get('/finance/export', { params }),
+  exportCSV:    (params) => api.get('/finance/export', { params: { ...params, format: 'csv' }, responseType: 'blob' }),
+}
+
 export default api

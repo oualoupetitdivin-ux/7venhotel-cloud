@@ -23,8 +23,10 @@ export default function MaintenancePage() {
     try {
       setLoading(true)
       const res = await maintenanceAPI.tickets({ statut: filtreStatut || undefined })
-      setTickets(res.data.data || [])
-      setTotal(res.data.pagination?.total || 0)
+      // L'API renvoie { tickets } : la page lisait { data, pagination } et n'affichait jamais aucun ticket
+      const liste = res.data.tickets || res.data.data || []
+      setTickets(liste)
+      setTotal(res.data.pagination?.total ?? liste.length)
     } catch { toast.error('Erreur chargement tickets') }
     finally { setLoading(false) }
   }

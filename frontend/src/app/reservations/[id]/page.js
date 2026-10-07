@@ -65,20 +65,34 @@ export default function DetailReservation() {
     setLoading(true)
     setFolioErr(null)
 
-    let resData = null
-    try {
-      const { data: r } = await reservationsAPI.obtenir(id)
-      resData = r.reservation ?? r
-      setRes(resData)
-    } catch {
+    // Réservation, folio, facture et arrhes ne dépendent que de l'id : chargés en parallèle
+    // (auparavant 4 appels en série — un aller-retour réseau chacun). Seuls les paiements
+    // attendent le folio.
+    const [rRes, fRes, faRes, gRes] = await Promise.allSettled([
+      reservationsAPI.obtenir(id),
+      facturationAPI.folioReservation(id),
+      facturationAPI.factureParReservation(id),
+      arrhesAPI.parReservation(id),
+    ])
+
+    if (rRes.status === 'rejected') {
       toast.error('Réservation introuvable')
       setLoading(false)
       return
     }
+    const r = rRes.value.data
+    setRes(r.reservation ?? r)
+
+    // Facture (disponible après checkout)
+    const factureChargee = faRes.status === 'fulfilled' ? (faRes.value.data.facture || null) : null
+    setFacture(factureChargee)
+
+    // Garantie arrhes
+    setGarantie(gRes.status === 'fulfilled' ? (gRes.value.data.garantie || null) : null)
 
     // Folio
-    try {
-      const { data: f } = await facturationAPI.folioReservation(id)
+    if (fRes.status === 'fulfilled') {
+      const f = fRes.value.data
       setFolio(f)
       if (f?.folio?.id) {
         const solde = f.solde?.solde_du ?? 0
@@ -89,28 +103,17 @@ export default function DetailReservation() {
         }
         await chargerPaiements(f.folio.id)
       }
-    } catch (err) {
+    } else {
+      const err  = fRes.reason
       const code = err?.response?.status
       const msg  = err?.response?.data?.erreur || err?.message
       setFolioErr(code === 403
         ? 'Accès au folio non autorisé (permission facturation.lire requise)'
         : code === 404
-          ? 'Aucun folio associé à cette réservation'
+          ? (factureChargee ? 'Folio clôturé au départ — voir la facture ci-dessous' : 'Aucun folio associé à cette réservation')
           : `Folio indisponible (${code || 'réseau'}) — ${msg}`)
       setFolio(null)
     }
-
-    // Facture (disponible après checkout)
-    try {
-      const { data: fData } = await facturationAPI.factureParReservation(id)
-      setFacture(fData.facture || null)
-    } catch {}
-
-    // Garantie arrhes
-    try {
-      const { data: gData } = await arrhesAPI.parReservation(id)
-      setGarantie(gData.garantie || null)
-    } catch {}
 
     setLoading(false)
   }, [id, chargerPaiements])

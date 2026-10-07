@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+/* Polices : next/font (app/layout.js) — variables --font-inter / --font-mono. Plus d'@import Google bloquant. */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -65,7 +65,7 @@
   }
 
   html {
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
     font-size: 13px;
   }
@@ -303,7 +303,7 @@
 }
 
 @layer utilities {
-  .font-mono { font-family: 'JetBrains Mono', 'SF Mono', monospace; }
+  .font-mono { font-family: var(--font-mono), 'SF Mono', monospace; }
   .text-xs-2 { font-size: 11px; }
   .anim-up { animation: fadeUp .2s ease forwards; }
   @keyframes fadeUp {

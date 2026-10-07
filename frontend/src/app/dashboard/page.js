@@ -2,13 +2,15 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { Bar, Line } from 'react-chartjs-2'
-import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend, Filler } from 'chart.js'
+import dynamic from 'next/dynamic'
 import AppLayout from '@/components/layout/AppLayout'
 import { analyticsAPI, reservationsAPI, aiAPI, facturationAPI } from '@/lib/api'
 import { fmt, STATUT_RESERVATION_COULEUR, useAuthStore } from '@/lib/utils'
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend, Filler)
+// chart.js hors du chemin critique : les KPI s'affichent avant le chargement des graphiques
+const GraphiqueEnAttente = () => <div className="w-full h-full rounded-lg bg-[var(--bg-2)] animate-pulse" />
+const Bar  = dynamic(() => import('@/components/charts/GraphiquesDashboard').then(m => m.Bar),  { ssr: false, loading: GraphiqueEnAttente })
+const Line = dynamic(() => import('@/components/charts/GraphiquesDashboard').then(m => m.Line), { ssr: false, loading: GraphiqueEnAttente })
 
 function getChartOpts() {
   const isLight = typeof document !== 'undefined' && document.documentElement.classList.contains('light')

@@ -160,7 +160,10 @@ async function registerPlugins() {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Hotel-ID', 'X-Tenant-ID', 'X-Correlation-ID'],
     exposedHeaders: ['X-Correlation-ID'],
-    credentials: true
+    credentials: true,
+    // Réponse au préflight mémorisée 2 h par le navigateur (plafond Chrome) : sans cela,
+    // chaque appel authentifié était précédé d'un OPTIONS (un aller-retour réseau de plus).
+    maxAge: 7200
   })
 
   // Rate limiting global (par IP)

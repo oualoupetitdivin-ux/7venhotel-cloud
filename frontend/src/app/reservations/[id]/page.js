@@ -425,7 +425,7 @@ export default function DetailReservation() {
               <div className="p-4 grid grid-cols-2 gap-4 text-sm">
                 {[
                   ['Numéro', res.numero_chambre ? `Ch. ${res.numero_chambre}` : '—'],
-                  ['Type',   res.type_chambre || '—'],
+                  ['Type',   res.type_chambre_nom || res.type_chambre || '—'],
                 ].map(([l, v]) => (
                   <div key={l}>
                     <div className="text-xs text-[var(--text-3)] mb-0.5">{l}</div>

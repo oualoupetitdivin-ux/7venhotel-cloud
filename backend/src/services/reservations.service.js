@@ -2,8 +2,10 @@
 
 const { createReservationsRepository, STATUTS_CHECKIN_VALIDES, STATUTS_CHECKOUT_VALIDES } = require('../repositories/reservations.repository')
 const { createFacturationRepository } = require('../repositories/facturation.repository')
-const { genererFacturePDF } = require('./pdf.service')
+const { genererFacturePDF, chargerHotelFacture } = require('./pdf.service')
 const { envoyerFacture }    = require('./email.service')
+const comptabilite          = require('./comptabilite.bridge')
+const folioRegles           = require('./folio.regles')
 const { NotFoundError, ConflictError, DomainError } = require('../errors')
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -540,6 +542,8 @@ function createReservationsService({ db, cache }) {
     //   6. Logger audit
     async checkout(id, hotelId, acteurId) {
       let tacheMenage
+      let factureCreee = null
+      let folioApres   = null
 
       await db.transaction(async (trx) => {
         const reservation = await repo.trouverParId(id, hotelId, trx)
@@ -602,10 +606,23 @@ function createReservationsService({ db, cache }) {
           acteur_type:    'staff',
         }, trx)
 
+        // LOT-PMS-02 — Folio + facture dans la MÊME transaction que le checkout :
+        // folio verrouillé, facture = ventilation nette des lignes, folio sorti de l'état 'ouvert'
+        // (cloture si solde nul, en_attente sinon). Double checkout / folio incohérent impossibles.
+        const folio = await trx('folios').where({ reservation_id: id, hotel_id: hotelId }).forUpdate().first()
+        if (folio) {
+          if (folio.statut !== 'ouvert')
+            throw new ConflictError(`Checkout impossible : folio déjà en statut "${folio.statut}"`, 'FOLIO_DEJA_FERME', { folio_id: folio.id })
+          factureCreee = await _creerFactureCheckout({ trx, repo: facturationRepo, hotelId, reservationId: id, folio })
+          folioApres   = await folioRegles.fermerAuCheckout(trx, folio.id, hotelId, acteurId)
+        }
+
         // Attribution automatique de points fidélité — dans la même transaction
         // que le checkout, mais son échec ne doit jamais faire échouer le checkout.
         if (reservation.client_id) {
           try {
+           // Savepoint : une erreur SQL fidélité ne doit pas avorter la transaction du checkout
+           await trx.transaction(async (trx) => {
             const regles = await trx('regles_fidelite').where({ hotel_id: hotelId }).first()
             const pointsParNuit = regles?.points_par_nuit ?? 10
             const pointsPar1000 = regles?.points_par_1000_xaf ?? 5
@@ -640,6 +657,7 @@ function createReservationsService({ db, cache }) {
                 })
               }
             }
+           })
           } catch (errFidelite) {
             console.error('[CHECKOUT] Erreur attribution points fidélité (non bloquant):', errFidelite.message)
           }
@@ -648,16 +666,33 @@ function createReservationsService({ db, cache }) {
 
       await invaliderCaches(hotelId, id)
 
-      // ── Génération facture + PDF + email (post-transaction, non bloquant) ──
-      // La transaction est déjà commitée — les erreurs ici ne font PAS rollback.
-      let factureGeneree = null
-      try {
-        factureGeneree = await _genererFactureCheckout({ db, repo: facturationRepo, hotelId, reservationId: id, log: db.log })
-      } catch (errFacture) {
-        console.error('[CHECKOUT] Erreur génération facture (non bloquant):', errFacture.message)
+      // ── PDF + email (post-commit, non bloquant) — la facture existe déjà en base ──
+      let factureGeneree = factureCreee
+        ? { id: factureCreee.id, numero_facture: factureCreee.numero_facture, url_pdf: factureCreee.url_pdf,
+            montant_ttc: factureCreee.montant_ttc, montant_arrhes: factureCreee.montant_arrhes,
+            montant_paye: factureCreee.montant_paye, montant_du: factureCreee.montant_du, devise: factureCreee.devise }
+        : null
+      if (factureCreee && !factureCreee.url_pdf) {
+        try {
+          const pdf = await _publierFactureCheckout({ db, repo: facturationRepo, hotelId, reservationId: id, facture: factureCreee, log: db.log })
+          factureGeneree.url_pdf = pdf.url_pdf
+        } catch (errFacture) {
+          console.error('[CHECKOUT] Erreur PDF/email facture (non bloquant):', errFacture.message)
+        }
       }
 
-      return { tache_menage: tacheMenage || null, facture: factureGeneree }
+      // LOT-PMS-01 — facture émise → ventes + imputation arrhes (post-commit, non bloquant, idempotent)
+      let comptabiliteFacture = null
+      if (factureGeneree?.id) {
+        comptabiliteFacture = await comptabilite.publier(db, { source: 'facture', id: factureGeneree.id, hotelId, userId: acteurId })
+      }
+
+      return {
+        tache_menage: tacheMenage || null,
+        facture:      factureGeneree,
+        folio:        folioApres ? { id: folioApres.id, statut: folioApres.statut, solde_du: Number(folioApres.solde_total) } : null,
+        comptabilite: comptabiliteFacture,
+      }
     },
 
     // ── Annuler une réservation ───────────────────────────────────────────
@@ -673,6 +708,27 @@ function createReservationsService({ db, cache }) {
         // Si la réservation était confirmée, révoquer le token portail si existant
         if (reservation.qr_token_actif) {
           await repo.revoquerSessionChambre(id, trx)
+        }
+
+        // LOT-PMS-02 — Folio cohérent à l'annulation : les nuitées/taxes pré-facturées à la création
+        // (P5) sont neutralisées par des corrections (lignes immuables, jamais supprimées).
+        // Le folio sort de l'état 'ouvert' : cloture si solde nul, en_attente s'il reste des arrhes à régler.
+        const folioAnnule = await trx('folios').where({ reservation_id: id, hotel_id: hotelId }).forUpdate().first()
+        if (folioAnnule && folioAnnule.statut === 'ouvert') {
+          const lignesFolio = await trx('lignes_folio').where({ folio_id: folioAnnule.id, hotel_id: hotelId })
+          const dejaCorrigees = new Set(lignesFolio.filter(l => l.ligne_corrigee_id).map(l => l.ligne_corrigee_id))
+          for (const l of lignesFolio) {
+            if (l.sens !== 'debit' || l.source_module !== 'reservation' || dejaCorrigees.has(l.id)) continue
+            if (!['hebergement', 'taxe'].includes(l.type_ligne)) continue
+            await facturationRepo.insererLigne({
+              folio_id: folioAnnule.id, hotel_id: hotelId, type_ligne: 'correction', sens: 'credit',
+              montant: l.montant_total, devise: l.devise, description: `Annulation réservation — ${l.description}`,
+              reference_id: l.id, reference_type: 'folio_ligne', ligne_corrigee_id: l.id,
+              source_module: 'reservation', cree_par: acteurId || null, cree_par_type: 'staff',
+              metadata: { motif: 'annulation', raison: raison || null },
+            }, trx)
+          }
+          await folioRegles.fermerAuCheckout(trx, folioAnnule.id, hotelId, acteurId)
         }
 
         mis = await repo.mettreAJourStatut(id, hotelId, {
@@ -700,17 +756,35 @@ function createReservationsService({ db, cache }) {
   }
 }
 
-// ── Génération de facture au checkout ────────────────────────────────────────
-// Appelée POST-transaction checkout. Ne doit jamais faire planter le checkout.
-// Si la facture existe déjà (retry), on retourne l'existante sans doublon.
-async function _genererFactureCheckout({ db, repo, hotelId, reservationId, log }) {
-  // 1. Vérifier si une facture existe déjà pour cette réservation
-  const existante = await repo.trouverFactureParReservation(reservationId, hotelId)
-  if (existante) {
-    return { id: existante.id, numero_facture: existante.numero_facture, url_pdf: existante.url_pdf, deja_existante: true }
-  }
+// ── Facture de checkout (LOT-PMS-02) ────────────────────────────────────────
+// Créée DANS la transaction du checkout. Idempotente (une facture par réservation).
+// montant_ttc = ventes nettes (débits − remises − corrections) ; montant_du = solde du folio.
+async function _creerFactureCheckout({ trx, repo, hotelId, reservationId, folio }) {
+  const existante = await repo.trouverFactureParReservation(reservationId, hotelId, trx)
+  if (existante) return existante
 
-  // 2. Récupérer données nécessaires
+  const reservation = await trx('reservations').where({ id: reservationId, hotel_id: hotelId }).select('client_id').first()
+  const lignes = await trx('lignes_folio').where({ folio_id: folio.id, hotel_id: hotelId }).orderBy('cree_le', 'asc')
+  const v = folioRegles.ventilerLignes(lignes)
+
+  const facture = await repo.creerFacture({
+    hotel_id:       hotelId,
+    reservation_id: reservationId,
+    client_id:      reservation?.client_id || null,
+    montant_ht:     v.ht,
+    montant_taxes:  v.taxes,
+    montant_ttc:    v.ttc,
+    devise:         folio.devise || 'XAF',
+    lignes:         lignes.map(l => ({ id: l.id, description: l.description, type: l.type_ligne, montant: l.montant_total, sens: l.sens, ligne_corrigee_id: l.ligne_corrigee_id || null })),
+    statut:         'emise',
+  }, trx)
+  const [maj] = await trx('factures').where({ id: facture.id, hotel_id: hotelId })
+    .update({ montant_arrhes: v.arrhes, montant_paye: v.paye, montant_du: v.du }).returning('*')
+  return maj
+}
+
+// ── PDF + email de la facture (post-commit, non bloquant) ─────────────────────
+async function _publierFactureCheckout({ db, repo, hotelId, reservationId, facture, log }) {
   const [reservation, folio, hotel] = await Promise.all([
     db('reservations AS r')
       .leftJoin('clients AS c', 'c.id', 'r.client_id')
@@ -719,78 +793,42 @@ async function _genererFactureCheckout({ db, repo, hotelId, reservationId, log }
         'r.*',
         db.raw("c.prenom || ' ' || c.nom AS nom_client"),
         'c.email AS email_client',
-        'c.telephone AS telephone_client',
-        'c.id AS client_id_reel'
+        'c.telephone AS telephone_client'
       )
       .first(),
     db('folios').where({ reservation_id: reservationId, hotel_id: hotelId }).first(),
-    db('hotels AS h')
-      .leftJoin('parametres_hotel AS ph', 'ph.hotel_id', 'h.id')
-      .where('h.id', hotelId)
-      .select('h.nom', 'h.id', db.raw("ph.parametres_supplementaires->>'adresse' AS adresse"), db.raw("ph.parametres_supplementaires->>'email_contact' AS email"))
-      .first(),
+    chargerHotelFacture(db, hotelId),
   ])
-
-  if (!reservation || !folio) throw new Error(`Données manquantes pour checkout (res=${reservationId}, folio=${!!folio})`)
+  if (!reservation || !folio) throw new Error(`Données manquantes pour la facture (res=${reservationId})`)
 
   const [lignes, paiements, soldeResult] = await Promise.all([
     db('lignes_folio').where({ folio_id: folio.id, hotel_id: hotelId }).orderBy('cree_le', 'asc'),
     db('paiements').where({ folio_id: folio.id, hotel_id: hotelId }).orderBy('cree_le', 'asc'),
     db.raw('SELECT * FROM get_solde_folio(?, ?)', [folio.id, hotelId]),
   ])
-  const solde = soldeResult.rows[0]
 
-  // 3. Calcul montants — depuis lignes folio (source de vérité)
-  const debits  = lignes.filter(l => l.sens === 'debit')
-  const credits = lignes.filter(l => l.sens === 'credit')
-  const totalHT    = debits.reduce((s, l) => s + Number(l.montant_total || 0), 0)
-  const totalTaxes = debits.filter(l => l.type_ligne === 'taxe').reduce((s, l) => s + Number(l.montant_total || 0), 0)
-  const totalTTC   = totalHT // lignes folio = TTC (taxes incluses dans les lignes séparées)
-
-  // 4. Créer la facture en DB
-  const facture = await repo.creerFacture({
-    hotel_id:       hotelId,
-    reservation_id: reservationId,
-    client_id:      reservation.client_id_reel || null,
-    montant_ht:     Math.max(0, totalHT - totalTaxes),
-    montant_taxes:  totalTaxes,
-    montant_ttc:    totalTTC,
-    devise:         folio.devise || 'XAF',
-    lignes:         lignes.map(l => ({ description: l.description, type: l.type_ligne, montant: l.montant_total, sens: l.sens })),
-    statut:         'emise',
-  })
-
-  // 5. Générer le PDF
   const { cheminRelatif, filepath } = await genererFacturePDF({
     facture,
     reservation,
-    hotel:     { nom: hotel?.nom || 'Hôtel', adresse: hotel?.adresse, email: hotel?.email },
+    hotel,
     client:    { nom: reservation.nom_client, email: reservation.email_client, telephone: reservation.telephone_client },
     lignes:    lignes.map(l => ({ ...l, montant: l.montant_total })),
     paiements,
-    solde,
+    solde:     soldeResult.rows[0],
   })
-
-  // 6. Stocker l'URL du PDF
   await repo.mettreAJourUrlPdf(facture.id, hotelId, cheminRelatif)
 
-  // 7. Envoyer l'email (silencieux si pas de SMTP)
-  await envoyerFacture({
+  // HELICONIA-READY-01 — email hors du chemin de réponse : un SMTP lent ou en échec
+  // bloquait le checkout ~4 s. L'envoi reste tenté, son échec est seulement journalisé.
+  envoyerFacture({
     emailDestinataire: reservation.email_client,
     nomClient:         reservation.nom_client,
     nomHotel:          hotel?.nom || 'Hôtel',
     numeroFacture:     facture.numero_facture,
     pdfPath:           filepath,
     log,
-  })
-
-  return {
-    id:             facture.id,
-    numero_facture: facture.numero_facture,
-    url_pdf:        cheminRelatif,
-    montant_ttc:    facture.montant_ttc,
-    devise:         facture.devise,
-  }
+  }).catch(err => console.error('[CHECKOUT] Erreur email facture (non bloquant):', err.message))
+  return { url_pdf: cheminRelatif }
 }
 
 module.exports = { createReservationsService }

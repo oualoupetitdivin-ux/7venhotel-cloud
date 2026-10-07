@@ -195,9 +195,14 @@ function createPortailService({ db, cache }) {
         throw new NotFoundError('Réservation', reservationId)
 
       // Messages et demandes en parallèle
-      const [messages, demandes] = await Promise.all([
+      const [messages, demandes, commandes] = await Promise.all([
         repo.listerMessages(reservationId, hotelId),
         repo.listerDemandesService(reservationId, hotelId),
+        // LOT-GUEST-01 — commandes room service réelles (suivi du statut par le client)
+        db('commandes_restaurant')
+          .where({ hotel_id: hotelId, reservation_id: reservationId })
+          .select('id', 'numero_commande', 'statut', 'sous_total', 'taxes', 'total', 'devise', 'cree_le')
+          .orderBy('cree_le', 'desc'),
       ])
 
       const PORTAIL_EXPIRE_STATUTS = ['terminee', 'annulee', 'no_show']
@@ -206,6 +211,7 @@ function createPortailService({ db, cache }) {
         reservation,
         messages,
         demandes_service: demandes,
+        commandes_room_service: commandes,
         // Indicateur UX : portail expiré si statut terminal
         portail_expire: PORTAIL_EXPIRE_STATUTS.includes(reservation.statut),
       }
@@ -275,6 +281,68 @@ function createPortailService({ db, cache }) {
 
       await cache.del(cleContexte(reservationId))
       return demande
+    },
+
+    // ── Catalogue room service (LOT-GUEST-01) ─────────────────────────────
+    // Auparavant : menu codé en dur dans le frontend, prix fictifs, simple demande texte.
+    // Désormais : articles réels de l'hôtel (articles_menu), disponibles et actifs.
+    async menu(hotelId) {
+      return db('articles_menu')
+        .where({ hotel_id: hotelId, disponible: true, actif: true })
+        .select('id', 'nom', 'description', 'categorie', 'prix', 'devise', 'image_url')
+        .orderBy([{ column: 'categorie' }, { column: 'ordre' }, { column: 'nom' }])
+    },
+
+    // ── Commande room service (LOT-GUEST-01) ──────────────────────────────
+    // Crée une VRAIE commande restaurant rattachée au séjour et à la chambre de la session
+    // (type_client 'hebergement', mode_reglement 'chambre'). Le cycle PMS existant prend
+    // le relais : préparation → servie → débit folio (+ taxes restaurant, PMS-02) → facture.
+    // Prix, hôtel, séjour et chambre viennent de la base — jamais du client.
+    async commanderRoomService(reservationId, hotelId, chambreId, { lignes, notes }) {
+      const reservation = await repo.trouverContexteReservation(reservationId, hotelId)
+      if (!reservation) throw new NotFoundError('Réservation', reservationId)
+      if (!STATUTS_ACTIFS.includes(reservation.statut))
+        throw new ConflictError('Le room service est disponible uniquement pendant votre séjour', 'ROOM_SERVICE_INDISPONIBLE', { statut: reservation.statut })
+
+      const demandes = new Map()
+      for (const l of lignes) demandes.set(l.article_id, (demandes.get(l.article_id) || 0) + l.quantite)
+      const articles = await db('articles_menu')
+        .where({ hotel_id: hotelId, disponible: true, actif: true })
+        .whereIn('id', [...demandes.keys()])
+      if (articles.length !== demandes.size)
+        throw new DomainError('Article indisponible ou inconnu', 'ARTICLE_INDISPONIBLE', 400)
+
+      const recentes = await db('commandes_restaurant')
+        .where({ hotel_id: hotelId, reservation_id: reservationId })
+        .where('numero_commande', 'like', 'RS-%')
+        .where('cree_le', '>', db.raw("NOW() - INTERVAL '10 minutes'"))
+        .count('* AS n').first()
+      if (Number(recentes.n) >= 5)
+        throw new ConflictError('Trop de commandes récentes — patientez quelques minutes', 'RATE_LIMIT_COMMANDE')
+
+      const lignesCmd = articles.map(a => {
+        const quantite = demandes.get(a.id)
+        return { article_id: a.id, nom_article: a.nom, categorie: a.categorie, quantite,
+                 prix_unitaire: Number(a.prix), montant_total: Math.round(Number(a.prix) * quantite * 100) / 100 }
+      })
+      const sousTotal = Math.round(lignesCmd.reduce((s, l) => s + l.montant_total, 0) * 100) / 100
+      const chambre = chambreId ? await db('chambres').where({ id: chambreId, hotel_id: hotelId }).select('numero').first() : null
+
+      let commande
+      await db.transaction(async (trx) => {
+        const numero = `RS-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${require('crypto').randomBytes(4).toString('hex').toUpperCase()}`
+        ;[commande] = await trx('commandes_restaurant').insert({
+          hotel_id: hotelId, reservation_id: reservationId, chambre_id: chambreId || null,
+          numero_commande: numero, type_client: 'hebergement',
+          numero_chambre: chambre ? chambre.numero : reservation.numero_chambre, numero_table: null,
+          mode_reglement: 'chambre', sous_total: sousTotal, total: sousTotal,
+          devise: reservation.devise || 'XAF',
+          notes: notes ? `Portail chambre — ${String(notes).slice(0, 500)}` : 'Commande portail chambre',
+        }).returning(['id', 'numero_commande', 'statut', 'sous_total', 'devise', 'cree_le'])
+        await trx('lignes_commande').insert(lignesCmd.map(l => ({ ...l, commande_id: commande.id })))
+      })
+      await cache.del(cleContexte(reservationId))
+      return { ...commande, lignes: lignesCmd }
     },
 
     // ── Soumettre une évaluation ──────────────────────────────────────────

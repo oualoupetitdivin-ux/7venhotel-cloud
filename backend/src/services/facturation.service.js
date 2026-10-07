@@ -3,6 +3,8 @@
 const { createFacturationRepository } = require('../repositories/facturation.repository')
 const { NotFoundError, ConflictError, DomainError } = require('../errors')
 const { MOYENS_ASYNC } = require('../validators/facturation.validator')
+const comptabilite = require('./comptabilite.bridge')
+const folioRegles  = require('./folio.regles')
 
 // ─────────────────────────────────────────────────────────────────────────────
 // facturation.service.js
@@ -113,11 +115,13 @@ function createFacturationService({ db, cache }) {
             { folio_id: folioId, statut: folio.statut }
           )
 
+        // LOT-PMS-02 — une remise diminue le dû : ligne CRÉDIT (auparavant forcée en débit → solde gonflé)
+        const sens = typeLigne === 'remise' ? 'credit' : 'debit'
         ligne = await repo.insererLigne({
           folio_id:      folioId,
           hotel_id:      hotelId,
           type_ligne:    typeLigne,
-          sens:          'debit',
+          sens,
           montant:       parseFloat(montant),
           devise:        folio.devise,
           description:   description.trim(),
@@ -135,7 +139,7 @@ function createFacturationService({ db, cache }) {
           montant:      parseFloat(montant),
           acteur_id:    acteurId || null,
           acteur_type:  'staff',
-          payload:      { type_ligne: typeLigne, description, sens: 'debit' },
+          payload:      { type_ligne: typeLigne, description, sens },
         }, trx)
       })
 
@@ -233,6 +237,8 @@ function createFacturationService({ db, cache }) {
             }, trx)
 
             await repo.confirmerPaiement(paiement.id, hotelId, acteurId, ligne.id, null, trx)
+            // LOT-PMS-02 — folio post-checkout : réglé → cloture
+            await folioRegles.recalculerStatut(trx, folioIdCible, hotelId, acteurId)
           }
 
           const solde = await repo.getSolde(folioIdCible, hotelId, trx)
@@ -268,6 +274,11 @@ function createFacturationService({ db, cache }) {
       // PATCH 1 : invalider le folio master (et non l'enfant) si paiement groupe
       const folioIdAInvalider = folioIdMaster
       await invaliderFolio(hotelId, folioIdAInvalider, reservationId)
+
+      // LOT-PMS-01 — paiement synchrone valide → événement comptable (post-commit, non bloquant)
+      if (paiement.statut === 'valide') {
+        await comptabilite.publier(db, { source: 'paiement', id: paiement.id, hotelId, userId: acteurId })
+      }
       return { paiement, ligne }
     },
     //
@@ -289,6 +300,8 @@ function createFacturationService({ db, cache }) {
       if (dejaConnu) {
         // Webhook reçu deux fois — réponse idempotente, pas d'erreur
         paiement = await repo.trouverPaiementParId(paiementId, hotelId)
+        // Rejeu webhook : le pont est idempotent (clé PAIEMENT:paiement:<id>)
+        if (paiement) await comptabilite.publier(db, { source: 'paiement', id: paiement.id, hotelId, userId: acteurId })
         return { paiement, ligne: null, idempotent: true }
       }
 
@@ -330,6 +343,7 @@ function createFacturationService({ db, cache }) {
           paiement = await repo.confirmerPaiement(
             paiementId, hotelId, acteurId, ligne.id, referenceExterne, trx
           )
+          await folioRegles.recalculerStatut(trx, paiement.folio_id, hotelId, acteurId)
 
           const solde = await repo.getSolde(paiement.folio_id, hotelId, trx)
           await repo.insererLog({
@@ -355,6 +369,9 @@ function createFacturationService({ db, cache }) {
       }
 
       await invaliderFolio(hotelId, paiement.folio_id, folioReservationId)
+
+      // LOT-PMS-01 — paiement asynchrone confirmé → événement comptable
+      await comptabilite.publier(db, { source: 'paiement', id: paiement.id, hotelId, userId: acteurId })
       return { paiement, ligne, idempotent: false }
     },
 
@@ -387,7 +404,9 @@ function createFacturationService({ db, cache }) {
 
         // Vérifier que le folio est ouvert (trigger DB est le filet final)
         const folio = await repo.trouverFolioParId(ligneOriginale.folio_id, hotelId, trx)
-        if (folio.statut !== 'ouvert')
+        // LOT-PMS-02 — la correction est LE mécanisme prévu après checkout (avoir) : autorisée sur
+        // en_attente / cloture ; le trigger DB n'autorise que ce type de ligne sur un folio fermé.
+        if (!['ouvert', 'en_attente', 'cloture'].includes(folio.statut))
           throw new ConflictError(
             `Correction impossible : folio en statut "${folio.statut}"`,
             'FOLIO_NON_OUVERT',
@@ -436,9 +455,14 @@ function createFacturationService({ db, cache }) {
             motif,
           },
         }, trx)
+
+        await folioRegles.recalculerStatut(trx, ligneOriginale.folio_id, hotelId, acteurId)
       })
 
       await invaliderFolio(hotelId, lignecorrection.folio_id, folioReservationId)
+
+      // LOT-PMS-01 — correction après facture → avoir ; correction de paiement → contre-passation
+      await comptabilite.publier(db, { source: 'correction', id: lignecorrection.id, hotelId, userId: acteurId })
       return lignecorrection
     },
 

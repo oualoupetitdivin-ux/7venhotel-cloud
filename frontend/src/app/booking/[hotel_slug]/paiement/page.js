@@ -3,7 +3,8 @@ import { useState, useEffect } from 'react'
 import { useParams } from 'next/navigation'
 import { bookingAPI } from '@/lib/api'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+// LOT-GUEST-01 — NEXT_PUBLIC_API_URL contient déjà /api/v1 (l'ancien préfixe doublé donnait une 404)
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1'
 
 export default function BookingPaiement() {
   const { hotel_slug } = useParams()
@@ -64,12 +65,11 @@ export default function BookingPaiement() {
       if (resa.token_client) localStorage.setItem('7vh_client_token', resa.token_client)
 
       // Étape 2 : initier le paiement CinetPay
-      const res = await fetch(`${API_URL}/api/v1/paiement-online/init`, {
+      const res = await fetch(`${API_URL}/paiement-online/init`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reservation_id:   resa.id,
-          montant:          resa.montant || chambre?.total,
           nom_client:       client.nom,
           prenom_client:    client.prenom,
           email_client:     client.email,
@@ -88,10 +88,11 @@ export default function BookingPaiement() {
         transaction_id: data.transaction_id,
         client,
         chambre,
-        total:        resa.montant || chambre?.total,
+        total:        data.montant || resa.montant,
         checkin:      search.checkin,
         checkout:     search.checkout,
-        identifiants: { email: client.email, motDePasse },
+        // Le mot de passe n'est plus conservé côté navigateur (LOT-GUEST-01)
+        checkin_en_ligne_url: resa.checkin_en_ligne_url || null,
       }))
 
       if (data.sandbox) {

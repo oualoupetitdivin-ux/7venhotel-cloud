@@ -20,6 +20,14 @@
 const fp = require('fastify-plugin')
 const { getPlan } = require('./plans.config')
 
+// Note A2 — Le lifecycle NE crée PAS de snapshot Billing.
+// Les transitions lifecycle modifient tenants.statut (état opérationnel du tenant),
+// pas la configuration billing de l'abonnement (plan, prix, modules).
+// Les snapshots billing ne sont créés que par :
+//   A. Création d'abonnement (POST /subscription) — atomique
+//   B. Changement de plan (PATCH /plan) — atomique
+// Toute modification du modèle de snapshot lifecycle nécessite validation CEPOS.
+
 // ── Machine à états ──────────────────────────────────────────────────────────
 //
 // Chaque état définit les transitions autorisées et l'action à déclencher.

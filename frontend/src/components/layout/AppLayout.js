@@ -88,7 +88,10 @@ const PAGES_AUTORISEES = {
   '/maintenance':  ['super_admin', 'manager', 'reception', 'technicien'],
   '/clients':      ['super_admin', 'manager', 'reception'],
   '/facturation':  ['super_admin', 'manager', 'comptabilite', 'reception'],
-  '/arrhes':       ['super_admin', 'manager', 'comptabilite'],
+  // QA-01 : alignement sur les menus RBAC-01 (réception → arrhes ; inbox portail manager/réception),
+  // qui renvoyaient vers l'accueil faute d'entrée ici. Le backend applique ses propres contrôles.
+  '/arrhes':       ['super_admin', 'manager', 'comptabilite', 'reception'],
+  '/messages-portail': ['super_admin', 'manager', 'reception'],
   // PHASE1-A — F&B
   '/catalogue':    ['super_admin', 'manager', 'restaurant'],
   '/stock':        ['super_admin', 'manager', 'restaurant'],

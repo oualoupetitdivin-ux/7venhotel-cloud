@@ -1,5 +1,5 @@
 ﻿'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import AppLayout from '@/components/layout/AppLayout'
 import { menageAPI, chambresAPI } from '@/lib/api'
 import { useAuthStore } from '@/lib/utils'
@@ -52,7 +52,10 @@ function TacheCard({ t, col, peutModifier, peutAssigner, agents, onStatut, onAss
   return (
     <div className="bg-[var(--bg-2)] border border-[var(--border-1)] rounded-xl p-3 hover:border-blue-500/40 transition-all">
       <div className="flex items-start justify-between gap-2 mb-2">
-        <div className="font-bold text-sm text-[var(--text-1)]">Ch. {t.numero_chambre || '—'}</div>
+        <div className="font-bold text-sm text-[var(--text-1)]">
+          Ch. {t.numero_chambre || '—'}
+          {t.en_retard && <span className="ml-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-400">En retard</span>}
+        </div>
         <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full badge ${PRIORITE_COULEUR[t.priorite] || 'badge-gray'}`}>
           {t.priorite}
         </span>
@@ -121,6 +124,52 @@ function TacheCard({ t, col, peutModifier, peutAssigner, agents, onStatut, onAss
   )
 }
 
+function MesMissions({ kanban, userId, onStatut }) {
+  const [enCours, setEnCours] = useState(null)
+  const miennes = ['en_cours', 'assignee', 'terminee']
+    .flatMap(s => (kanban[s] || []).map(t => ({ ...t, statut: s })))
+    .filter(t => t.assignee_a === userId)
+  const ACTION = { assignee: ['en_cours', '▶ Commencer'], en_cours: ['terminee', '✓ Terminée'] }
+  const ETAT   = { assignee: 'À faire', en_cours: 'En cours', terminee: 'Terminée — en attente de contrôle' }
+
+  async function agir(t) {
+    setEnCours(t.id)
+    try { await onStatut(t.id, ACTION[t.statut][0]) } finally { setEnCours(null) }
+  }
+
+  if (!miennes.length) {
+    return (
+      <div className="card p-10 text-center">
+        <div className="text-4xl mb-3">🧹</div>
+        <div className="font-bold text-[var(--text-1)]">Aucune mission pour le moment</div>
+        <div className="text-xs text-[var(--text-3)] mt-1">Vos chambres apparaîtront ici dès que la gouvernante vous les affecte.</div>
+      </div>
+    )
+  }
+  return (
+    <div className="grid gap-3 max-w-xl">
+      {miennes.map(t => (
+        <div key={t.id} className="card p-5 flex items-center gap-4">
+          <div className="flex-1">
+            <div className="text-2xl font-black text-[var(--text-1)]">
+              Chambre {t.numero_chambre || '—'}
+              {t.priorite === 'urgente' && <span className="ml-2 text-xs align-middle px-2 py-0.5 rounded-full bg-red-500/20 text-red-400">Urgent</span>}
+              {t.en_retard && <span className="ml-2 text-xs align-middle px-2 py-0.5 rounded-full bg-red-500/20 text-red-400">En retard</span>}
+            </div>
+            <div className="text-xs text-[var(--text-3)] mt-1">{TYPE_LABEL[t.type_tache] || t.type_tache} · {ETAT[t.statut]}</div>
+          </div>
+          {ACTION[t.statut] && (
+            <button disabled={enCours === t.id} onClick={() => agir(t)}
+              className="btn btn-primary text-base px-6 py-3 disabled:opacity-50">
+              {enCours === t.id ? '…' : ACTION[t.statut][1]}
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function KpiMini({ label, value, color = 'text-white', sub }) {
   return (
     <div className="kpi-card text-center">
@@ -135,9 +184,17 @@ export default function MenagePage() {
   const { user } = useAuthStore()
   const peutCreer    = ['manager', 'super_admin', 'housekeeping'].includes(user?.role)
   const peutModifier = ['manager', 'super_admin', 'housekeeping'].includes(user?.role)
-  const peutAssigner = ['manager', 'super_admin'].includes(user?.role)
+  // HELICONIA-READY-01 — la gouvernante (rôle housekeeping) a menage.valider côté API : elle affecte.
+  const peutAssigner = ['manager', 'super_admin', 'housekeeping'].includes(user?.role)
 
   const [onglet,   setOnglet]   = useState('kanban')
+  // Le store n'est pas hydraté au premier rendu : on ouvre « Mes missions » dès que le rôle est connu
+  const ongletInitialise = useRef(false)
+  useEffect(() => {
+    if (ongletInitialise.current || !user?.role) return
+    ongletInitialise.current = true
+    if (user.role === 'housekeeping') setOnglet('mes')
+  }, [user?.role])
   const [kanban,   setKanban]   = useState({ ouverte:[], assignee:[], en_cours:[], terminee:[], validee:[] })
   const [chambres, setChambres] = useState([])
   const [agents,   setAgents]   = useState([])
@@ -194,7 +251,7 @@ export default function MenagePage() {
 
   // Auto-refresh kanban toutes les 30s
   useEffect(() => {
-    if (onglet !== 'kanban') return
+    if (onglet !== 'kanban' && onglet !== 'mes') return
     const t = setInterval(chargerKanban, 30000)
     return () => clearInterval(t)
   }, [onglet, chargerKanban])
@@ -252,7 +309,7 @@ export default function MenagePage() {
 
         {/* Onglets */}
         <div className="flex gap-1 border-b border-[var(--border-1)]">
-          {[['kanban','🗂 Kanban'],['performance','📊 Performance'],['equipe','👥 Équipe']].map(([k,l]) => (
+          {[['mes','🧹 Mes missions'],['kanban','🗂 Kanban'],['performance','📊 Performance'],['equipe','👥 Équipe']].map(([k,l]) => (
             <button key={k} onClick={() => setOnglet(k)}
               className={`px-4 py-2.5 text-xs font-semibold border-b-2 -mb-px transition-colors ${onglet===k ? 'border-blue-500 text-blue-400' : 'border-transparent text-[var(--text-3)] hover:text-[var(--text-1)]'}`}>
               {l}
@@ -338,6 +395,11 @@ export default function MenagePage() {
         )}
 
         {/* ─── KANBAN ─────────────────────────────────────────────────────── */}
+        {/* ── Mes missions : vue ménagère (HELICONIA-READY-01) ── */}
+        {onglet === 'mes' && (
+          <MesMissions kanban={kanban} userId={user?.id} onStatut={changerStatut} />
+        )}
+
         {onglet === 'kanban' && (
           loading ? (
             <div className="flex gap-3 p-2">

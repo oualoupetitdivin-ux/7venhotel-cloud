@@ -2,54 +2,45 @@
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+// LOT-GUEST-01 — NEXT_PUBLIC_API_URL contient déjà /api/v1 (cf. lib/api.js).
+// L'ancien préfixe `${API_URL}/api/v1/...` produisait /api/v1/api/v1/... → 404.
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1'
 
+// LOT-GUEST-01 — l'affichage suit l'ÉTAT SERVEUR (paiement + réservation PMS).
+// Le mode sandbox (CinetPay non configuré) n'est JAMAIS présenté comme un paiement réussi :
+// la réservation reste « en attente » tant que l'hôtel ne l'a pas confirmée.
 export default function BookingConfirmation() {
   const { hotel_slug }  = useParams()
   const searchParams    = useSearchParams()
   const [conf, setConf] = useState(null)
-  const [paiementStatut, setPaiementStatut] = useState(null) // 'reussi' | 'echoue' | 'en_attente' | 'sandbox'
+  const [statut, setStatut] = useState(null)      // réponse /paiement-online/statut
+  const [chargement, setChargement] = useState(true)
+  const [erreurStatut, setErreurStatut] = useState(null)
+
+  const tx = searchParams.get('tx')
 
   useEffect(() => {
-    // Charger les données de la réservation depuis sessionStorage
-    const stored = JSON.parse(sessionStorage.getItem('bk_confirmation') || 'null')
-    setConf(stored)
+    try { setConf(JSON.parse(sessionStorage.getItem('bk_confirmation') || 'null')) } catch { setConf(null) }
+    if (!tx) { setChargement(false); return }
+    fetch(`${API_URL}/paiement-online/statut/${encodeURIComponent(tx)}`)
+      .then(async r => {
+        const d = await r.json().catch(() => null)
+        if (!r.ok) throw new Error(d?.erreur || 'Transaction introuvable')
+        return d
+      })
+      .then(d => setStatut(d))
+      .catch(err => setErreurStatut(err.message))
+      .finally(() => setChargement(false))
+  }, [tx])
 
-    // Vérifier le statut CinetPay si query param ?tx est présent
-    const tx      = searchParams.get('tx')
-    const sandbox = searchParams.get('sandbox')
+  const sandbox   = !!statut?.sandbox
+  const confirmee = ['confirmee', 'arrivee', 'terminee'].includes(statut?.statut_reservation)
+  const estReussi = !sandbox && statut?.statut === 'reussi' && confirmee
+  const estEchoue = statut?.statut === 'echoue' || statut?.statut_reservation === 'annulee'
+  const reference = statut?.numero_reservation || conf?.ref
 
-    if (tx && sandbox) {
-      // Mode sandbox : paiement simulé
-      setPaiementStatut('sandbox')
-    } else if (tx) {
-      // Production : interroger l'API pour le statut réel
-      fetch(`${API_URL}/api/v1/paiement-online/statut/${tx}`)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => {
-          if (d?.statut) setPaiementStatut(d.statut)
-        })
-        .catch(() => {/* silencieux — on affichera l'état stored */})
-    }
-  }, [hotel_slug, searchParams])
-
-  // Déterminer l'état d'affichage
-  const txParam      = searchParams.get('tx')
-  const sandboxParam = searchParams.get('sandbox')
-  const viaCinetPay  = !!txParam
-
-  // Statut effectif pour l'affichage
-  const statutEffectif = viaCinetPay
-    ? (paiementStatut || 'en_attente')
-    : (conf?.statut || 'en_attente')
-
-  const estReussi    = statutEffectif === 'reussi' || statutEffectif === 'sandbox' || statutEffectif === 'confirmee'
-  const estEchoue    = statutEffectif === 'echoue'
-  const enAttente    = !estReussi && !estEchoue
-
-  // Fallback si aucune donnée en session (accès direct par URL CinetPay return)
-  if (!conf && !txParam) return (
-    <div className="min-h-screen bg-[#060810] flex items-center justify-center">
+  if (!conf && !tx) return (
+    <div className="min-h-screen bg-[#060810] flex items-center justify-center p-6">
       <div className="text-white text-center">
         <div className="text-4xl mb-4">📋</div>
         <p className="text-gray-400 text-sm mb-4">Aucune réservation trouvée.</p>
@@ -58,71 +49,70 @@ export default function BookingConfirmation() {
     </div>
   )
 
+  if (chargement) return (
+    <div className="min-h-screen bg-[#060810] flex items-center justify-center">
+      <div className="w-8 h-8 border-2 border-gray-700 border-t-blue-500 rounded-full animate-spin"/>
+    </div>
+  )
+
   return (
     <div className="min-h-screen bg-[#060810] flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-lg">
 
-        {/* Carte statut paiement */}
-        <div className="bg-[#111827] border border-white/10 rounded-3xl p-8 text-center mb-5">
+        <div className="bg-[#111827] border border-white/10 rounded-3xl p-8 text-center mb-5" data-testid="statut-reservation">
           {estReussi ? (
             <>
               <div className="w-16 h-16 rounded-full bg-emerald-500 flex items-center justify-center text-3xl mx-auto mb-5 shadow-xl shadow-emerald-500/30">✓</div>
-              <h1 className="text-2xl font-black text-white mb-2">
-                {sandboxParam ? 'Paiement simulé (sandbox)' : 'Réservation confirmée !'}
-              </h1>
-              <p className="text-sm text-gray-400 mb-5">
-                {sandboxParam
-                  ? 'Mode développement — le paiement CinetPay sera actif en production.'
-                  : 'Votre paiement a été validé. Un email de confirmation vous a été envoyé.'}
-              </p>
+              <h1 className="text-2xl font-black text-white mb-2">Réservation confirmée !</h1>
+              <p className="text-sm text-gray-400 mb-5">Votre paiement a été validé par l&apos;hôtel.</p>
             </>
           ) : estEchoue ? (
             <>
               <div className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center text-3xl mx-auto mb-5 shadow-xl shadow-red-500/30">✕</div>
-              <h1 className="text-2xl font-black text-white mb-2">Paiement échoué</h1>
+              <h1 className="text-2xl font-black text-white mb-2">
+                {statut?.statut_reservation === 'annulee' ? 'Réservation expirée' : 'Paiement échoué'}
+              </h1>
               <p className="text-sm text-gray-400 mb-5">
-                Le paiement n&apos;a pas pu être validé. Veuillez réessayer ou choisir un autre moyen de paiement.
+                {statut?.statut_reservation === 'annulee'
+                  ? 'Le paiement n\'a pas été reçu dans le délai : la chambre a été libérée.'
+                  : 'Le paiement n\'a pas pu être validé. Veuillez recommencer votre réservation.'}
               </p>
-              <a
-                href={`/booking/${hotel_slug}/paiement`}
-                className="inline-block bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold px-6 py-2.5 rounded-xl transition-colors"
-              >
-                Réessayer le paiement
+              <a href={`/booking/${hotel_slug}`}
+                className="inline-block bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold px-6 py-2.5 rounded-xl transition-colors">
+                Nouvelle réservation
               </a>
             </>
           ) : (
             <>
               <div className="w-16 h-16 rounded-full bg-amber-500 flex items-center justify-center text-3xl mx-auto mb-5 shadow-xl shadow-amber-500/30">⏳</div>
-              <h1 className="text-2xl font-black text-white mb-2">Paiement en cours de traitement</h1>
-              <p className="text-sm text-gray-400 mb-2">
-                Votre réservation est enregistrée. Finalisez le paiement sur la plateforme CinetPay pour confirmer.
-              </p>
-              <p className="text-xs text-amber-400 mb-5">
-                La confirmation vous sera envoyée par email dès que le paiement sera validé.
-              </p>
+              <h1 className="text-2xl font-black text-white mb-2">Réservation enregistrée — en attente</h1>
+              {sandbox ? (
+                <p className="text-sm text-amber-300 mb-2" data-testid="mention-sandbox">
+                  Paiement en ligne non activé sur cet environnement (mode simulation) : aucun montant n&apos;a été débité.
+                  Votre réservation sera confirmée par l&apos;hôtel.
+                </p>
+              ) : (
+                <p className="text-sm text-gray-400 mb-2">
+                  Votre réservation est enregistrée. Elle sera confirmée dès que le paiement aura été validé.
+                </p>
+              )}
+              {erreurStatut && <p className="text-xs text-red-400 mb-2">Statut indisponible : {erreurStatut}</p>}
             </>
           )}
 
-          {/* Référence */}
-          {(conf?.ref || txParam) && (
+          {reference && (
             <div className="bg-[#1A2235] rounded-2xl px-5 py-3 inline-block mb-2">
-              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">
-                {txParam ? 'Transaction' : 'Référence'}
-              </div>
-              <div className="text-xl font-black font-mono text-blue-400">
-                {conf?.ref || txParam}
-              </div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Référence</div>
+              <div className="text-xl font-black font-mono text-blue-400">{reference}</div>
             </div>
           )}
-
-          {enAttente && !estEchoue && (
+          {statut && (
             <p className="text-[9.5px] text-gray-600 mt-3">
-              Statut : en attente de confirmation CinetPay
+              Paiement : {statut.statut} · Réservation : {statut.statut_reservation || '—'}
             </p>
           )}
         </div>
 
-        {/* Détails réservation (si disponibles via sessionStorage) */}
         {conf && (
           <div className="bg-[#111827] border border-white/10 rounded-2xl p-5 mb-5 text-sm">
             <div className="grid grid-cols-2 gap-3">
@@ -131,7 +121,7 @@ export default function BookingConfirmation() {
                 ['Chambre', conf.chambre?.type || '—'],
                 ['Arrivée', conf.checkin || '—'],
                 ['Départ',  conf.checkout || '—'],
-                ['Total',   `${(conf.total || 0).toLocaleString('fr-FR')} XAF`],
+                ['Total',   `${Number(statut?.montant || conf.total || 0).toLocaleString('fr-FR')} XAF`],
               ].map(([l, v]) => (
                 <div key={l}>
                   <div className="text-[9.5px] text-gray-500 uppercase mb-0.5">{l}</div>
@@ -142,25 +132,19 @@ export default function BookingConfirmation() {
           </div>
         )}
 
-        {/* Identifiants espace client */}
-        {conf?.identifiants && (
-          <div className="bg-[#111827] border border-emerald-500/25 rounded-2xl p-5 mb-5">
-            <div className="text-xs font-bold text-emerald-400 mb-1">🔐 Vos identifiants de connexion</div>
-            <div className="text-[9.5px] text-gray-500 mb-3">Notez-les pour accéder à votre espace client depuis n&apos;importe quel appareil.</div>
-            <div className="space-y-2">
-              <div className="flex justify-between items-center py-1.5 border-b border-white/5">
-                <span className="text-[9.5px] text-gray-500 uppercase tracking-wide">Email</span>
-                <span className="text-white text-xs font-mono">{conf.identifiants.email}</span>
-              </div>
-              <div className="flex justify-between items-center py-1.5">
-                <span className="text-[9.5px] text-gray-500 uppercase tracking-wide">Mot de passe</span>
-                <span className="text-white text-xs font-mono">{conf.identifiants.motDePasse}</span>
-              </div>
+        {conf?.checkin_en_ligne_url && !estEchoue && (
+          <div className="bg-[#111827] border border-blue-500/25 rounded-2xl p-5 mb-5">
+            <div className="text-xs font-bold text-blue-400 mb-1">🛎 Check-in en ligne</div>
+            <div className="text-[10px] text-gray-400 mb-3">
+              Gagnez du temps à l&apos;arrivée : complétez vos informations dès que la réservation est confirmée.
             </div>
+            <a href={conf.checkin_en_ligne_url} data-testid="lien-checkin"
+              className="inline-block bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl">
+              Faire mon check-in en ligne →
+            </a>
           </div>
         )}
 
-        {/* Actions */}
         {!estEchoue && (
           <div className="flex gap-3">
             <a href="/client-portal/connexion" className="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-3 rounded-xl text-center transition-colors">
@@ -170,6 +154,11 @@ export default function BookingConfirmation() {
               Nouvelle réservation
             </a>
           </div>
+        )}
+        {conf?.client?.email && (
+          <p className="text-[10px] text-gray-500 text-center mt-4">
+            Espace client : connectez-vous avec {conf.client.email} et le mot de passe choisi lors de la réservation.
+          </p>
         )}
       </div>
     </div>

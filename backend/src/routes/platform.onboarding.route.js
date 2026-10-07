@@ -22,6 +22,7 @@
 const { randomUUID }  = require('crypto')
 const { randomBytes } = require('crypto')
 const { getPlan }     = require('../engines/plans.config')
+const { createSnapshot } = require('../utils/subscription.bridge')
 
 // Génère un slug à partir d'un nom (ex: "Groupe Royal" → "groupe-royal")
 function slugifier(nom) {
@@ -217,18 +218,27 @@ module.exports = async function platformOnboardingRoutes(fastify) {
 
     const devise = deviseInput?.trim().toUpperCase() || tenant.devise_defaut || 'XAF'
 
-    // ── Créer l'abonnement ───────────────────────────────────────────────────
-    const [abonnement] = await fastify.db('abonnements').insert({
-      tenant_id:        id,
-      plan:             plan.toLowerCase(),
-      statut:           'essai',
-      date_debut:       new Date().toISOString().split('T')[0],
-      max_hotels:       planConfig.max_hotels,
-      max_chambres:     planConfig.max_chambres,
-      max_utilisateurs: planConfig.max_utilisateurs,
-      montant_mensuel:  montant,
-      devise,
-    }).returning('*')
+    // ── Créer l'abonnement + snapshot Billing (atomique — A2) ───────────────
+    let abonnement
+    await fastify.db.transaction(async (trx) => {
+      ;[abonnement] = await trx('abonnements').insert({
+        tenant_id:        id,
+        plan:             plan.toLowerCase(),
+        statut:           'essai',
+        date_debut:       new Date().toISOString().split('T')[0],
+        max_hotels:       planConfig.max_hotels,
+        max_chambres:     planConfig.max_chambres,
+        max_utilisateurs: planConfig.max_utilisateurs,
+        montant_mensuel:  montant,
+        devise,
+      }).returning('*')
+
+      await createSnapshot(trx, {
+        tenant_id:     id,
+        abonnement_id: abonnement.id,
+        plan_code:     abonnement.plan,
+      })
+    })
 
     // ── Transition lifecycle lead → essai ────────────────────────────────────
     // Uniquement si le tenant est en état 'lead' (premier abonnement)

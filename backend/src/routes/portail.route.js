@@ -156,6 +156,25 @@ module.exports = async function portailRoutes(fastify) {
     })
   })
 
+  // ── GET /menu — Catalogue room service réel de l'hôtel (LOT-GUEST-01) ──────
+  fastify.get('/menu', { preHandler: authentifierSession }, async (req, reply) => {
+    const articles = await service.menu(req.portailCtx.hotelId)
+    return reply.send({ articles })
+  })
+
+  // ── POST /room-service — Commande réelle imputée à la chambre (LOT-GUEST-01) ─
+  fastify.post('/room-service', { preHandler: authentifierSession }, async (req, reply) => {
+    const { lignes, notes } = req.body || {}
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    if (!Array.isArray(lignes) || lignes.length === 0 || lignes.length > 30 ||
+        !lignes.every(l => l && UUID.test(String(l.article_id)) && Number.isInteger(l.quantite) && l.quantite >= 1 && l.quantite <= 20)) {
+      throw new ValidationError([{ champ: 'lignes', message: '1 à 30 lignes { article_id (UUID), quantite (1-20) }' }])
+    }
+    const { reservationId, hotelId, chambreId } = req.portailCtx
+    const commande = await service.commanderRoomService(reservationId, hotelId, chambreId, { lignes, notes })
+    return reply.status(201).send({ message: 'Commande transmise au restaurant', commande })
+  })
+
   // ─────────────────────────────────────────────────────────────────────────
   // INBOX PORTAIL — Routes réception (staff JWT + contexteHotel)
   //
@@ -315,27 +334,51 @@ module.exports = async function portailRoutes(fastify) {
     })
   })
 
-  // GET /portail/appels — Alertes d'appel en attente (polling réception, 2h glissantes)
+  // ── Demandes chambre côté personnel (HELICONIA-READY-01) ───────────────────
+  // Appels réception ET demandes de service du portail (serviettes, taxi, ménage…)
+  // étaient enregistrés mais seuls les appels < 2 h remontaient, et « traiter » écrivait
+  // un statut hors enum (500). Cycle : nouvelle → en_cours (prise en charge) → traitee.
+  const demandesOuvertes = (hotelId) => fastify.db('demandes_service AS ds')
+    .join('chambres AS c', 'c.id', 'ds.chambre_id')
+    .leftJoin('utilisateurs AS u', 'u.id', 'ds.traitee_par')
+    .where('ds.hotel_id', hotelId)
+    .whereIn('ds.statut', ['nouvelle', 'en_cours'])
+    .select('ds.id', 'ds.cree_le', 'ds.type_service', 'ds.description', 'ds.statut',
+      'c.numero AS numero_chambre', fastify.db.raw("TRIM(CONCAT(u.prenom, ' ', u.nom)) AS pris_en_charge_par"))
+    .orderBy('ds.cree_le', 'asc')
+
+  // GET /portail/appels — Appels réception non clos (polling réception)
   fastify.get('/appels', { preHandler: [fastify.authentifier, fastify.contexteHotel] }, async (req, reply) => {
-    const appels = await fastify.db('demandes_service AS ds')
-      .join('reservations AS r', 'r.id', 'ds.reservation_id')
-      .join('chambres AS c', 'c.id', 'r.chambre_id')
-      .where({ 'ds.hotel_id': req.hotelId, 'ds.type_service': 'appel_reception' })
-      .whereIn('ds.statut', ['nouvelle', 'en_cours'])
-      .where('ds.cree_le', '>', fastify.db.raw("NOW() - INTERVAL '2 hours'"))
-      .select(
-        'ds.id', 'ds.cree_le', 'ds.description', 'ds.statut',
-        'c.numero AS numero_chambre'
-      )
-      .orderBy('ds.cree_le', 'desc')
+    const appels = await demandesOuvertes(req.hotelId).where('ds.type_service', 'appel_reception')
     return reply.send({ appels, total: appels.length })
   })
 
-  // PUT /portail/appels/:id/traiter — Marquer un appel comme traité
-  fastify.put('/appels/:id/traiter', { preHandler: [fastify.authentifier, fastify.contexteHotel] }, async (req, reply) => {
-    await fastify.db('demandes_service')
-      .where({ id: req.params.id, hotel_id: req.hotelId, type_service: 'appel_reception' })
-      .update({ statut: 'terminee' })
-    return reply.send({ ok: true })
+  // GET /portail/demandes — Autres demandes chambre non closes
+  fastify.get('/demandes', { preHandler: [fastify.authentifier, fastify.contexteHotel] }, async (req, reply) => {
+    const demandes = await demandesOuvertes(req.hotelId).whereNot('ds.type_service', 'appel_reception')
+    return reply.send({ demandes, total: demandes.length })
   })
+
+  // PUT /portail/demandes/:id/statut — { statut: en_cours | traitee | annulee }
+  const STATUTS_STAFF = ['en_cours', 'traitee', 'annulee']
+  const changerStatutDemande = async (req, reply, statut) => {
+    if (!STATUTS_STAFF.includes(statut)) {
+      return reply.status(400).send({ erreur: `statut invalide — acceptés : ${STATUTS_STAFF.join(', ')}`, code: 'STATUT_INVALIDE' })
+    }
+    const [demande] = await fastify.db('demandes_service')
+      .where({ id: req.params.id, hotel_id: req.hotelId })
+      .whereIn('statut', ['nouvelle', 'en_cours'])
+      .update({ statut, traitee_par: req.user.id, traitee_le: fastify.db.fn.now(), mis_a_jour_le: fastify.db.fn.now() })
+      .returning(['id', 'statut', 'reservation_id'])
+    if (!demande) return reply.status(404).send({ erreur: 'Demande introuvable ou déjà close', code: 'DEMANDE_INTROUVABLE' })
+    // Le portail client relit ses demandes depuis le contexte mis en cache
+    await fastify.cache.del(`portail:contexte:${demande.reservation_id}`).catch(() => {})
+    return reply.send({ ok: true, demande })
+  }
+  fastify.put('/demandes/:id/statut', { preHandler: [fastify.authentifier, fastify.contexteHotel] },
+    (req, reply) => changerStatutDemande(req, reply, req.body?.statut))
+
+  // PUT /portail/appels/:id/traiter — conservé pour compatibilité
+  fastify.put('/appels/:id/traiter', { preHandler: [fastify.authentifier, fastify.contexteHotel] },
+    (req, reply) => changerStatutDemande(req, reply, 'traitee'))
 }

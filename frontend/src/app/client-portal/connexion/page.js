@@ -7,18 +7,31 @@ export default function ClientConnexion() {
   const [mdp, setMdp]     = useState('')
   const [loading, setLoading] = useState(false)
   const [erreur, setErreur]   = useState('')
+  // LOT-GUEST-01 — même email dans plusieurs hôtels : l'API demande de préciser l'hôtel (409 HOTEL_REQUIS)
+  const [hotels, setHotels]   = useState(null)
+  const [hotelSlug, setHotelSlug] = useState('')
 
   async function connexion(e) {
     e.preventDefault()
     setLoading(true); setErreur('')
     try {
-      const { data } = await authAPI.clientConnexion({ email, mot_de_passe: mdp })
+      const { data } = await authAPI.clientConnexion({ email, mot_de_passe: mdp, ...(hotelSlug ? { hotel_slug: hotelSlug } : {}) })
       localStorage.setItem('7vh_client_token', data.token)
       if (data.client?.hotel_slug) {
         localStorage.setItem('7vh_hotel_slug', data.client.hotel_slug)
       }
       window.location.href = '/client-portal'
-    } catch { setErreur('Email ou mot de passe incorrect') }
+    } catch (err) {
+      const rep = err?.response
+      if (rep?.status === 409 && rep.data?.code === 'HOTEL_REQUIS') {
+        setHotels(rep.data.hotels || [])
+        setErreur("Votre compte existe dans plusieurs hôtels : choisissez l'hôtel concerné.")
+      } else if (rep?.status === 429) {
+        setErreur('Trop de tentatives — réessayez dans quelques minutes')
+      } else {
+        setErreur('Email ou mot de passe incorrect')
+      }
+    }
     finally { setLoading(false) }
   }
 
@@ -31,6 +44,9 @@ export default function ClientConnexion() {
           <p className="text-sm text-gray-400">Votre espace client</p>
         </div>
 
+        {/* LOT-GUEST-01 — ces identifiants sont VALIDES (compte créé par routes/seed.js) : les afficher
+            sur une interface client réelle ouvrait ce compte à tout visiteur. Opt-in développement uniquement. */}
+        {process.env.NEXT_PUBLIC_AFFICHER_COMPTE_DEMO === 'true' && (
         <div className="bg-[#111827] border border-white/10 rounded-2xl p-5 mb-3">
           <div className="text-[9.5px] font-bold uppercase tracking-widest text-gray-500 mb-2">🚀 Compte démo</div>
           <button onClick={() => { setEmail('client@demo.com'); setMdp('demo123') }}
@@ -43,6 +59,7 @@ export default function ClientConnexion() {
             <span className="ml-auto text-gray-600 text-xs">→</span>
           </button>
         </div>
+        )}
 
         <form onSubmit={connexion} className="bg-[#111827] border border-white/10 rounded-2xl p-5 space-y-3">
           {erreur && <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-xs p-2.5 rounded-lg">{erreur}</div>}
@@ -54,6 +71,16 @@ export default function ClientConnexion() {
               />
             </div>
           ))}
+          {hotels && hotels.length > 1 && (
+            <div>
+              <label className="text-[10px] text-gray-500 block mb-1 uppercase">Hôtel</label>
+              <select value={hotelSlug} onChange={e => setHotelSlug(e.target.value)}
+                className="w-full bg-[#1A2235] border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none">
+                <option value="">— Choisir —</option>
+                {hotels.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+            </div>
+          )}
           <button type="submit" disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-bold py-2.5 rounded-xl transition-colors">
             {loading ? 'Connexion…' : 'Se connecter →'}

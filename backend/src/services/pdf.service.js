@@ -5,21 +5,27 @@ const path = require('path')
 const fs   = require('fs/promises')
 
 const FACTURES_DIR = path.join(__dirname, '../../../uploads/factures')
+const RACINE       = path.join(__dirname, '../../../')
 
 // ─────────────────────────────────────────────────────────────────────────────
 // pdf.service.js
 //
 // Génère un PDF de facture hôtelière avec pdf-lib.
 // Stocke le PDF dans uploads/factures/ et retourne le chemin relatif.
-// Aucun accès DB — les données sont passées en paramètre.
+// Les montants viennent de la facture et du folio (billing certifié) : ce service
+// ne recalcule aucune taxe, il met en page.
+//
+// HELICONIA-READY-01 — mise en page revue : logo et identité de l'hôtel
+// (adresse, contacts, NIU/RCCM), taxes détaillées avec leur taux, règlements
+// séparés des prestations (le paiement apparaissait deux fois), modes de
+// paiement lisibles, statut acquittée / solde dû.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// StandardFonts = WinAnsi : pas d'espace fine insécable (toLocaleString), formatage manuel.
 function fmt(montant, devise) {
   if (montant == null) return '—'
   const n = Number(montant)
   if (isNaN(n)) return '—'
-  // Formatage manuel — évite   (espace fine insécable) produit par toLocaleString('fr-FR')
-  // que StandardFonts (WinAnsi) de pdf-lib ne peut pas encoder.
   const s = Math.round(Math.abs(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
   return (n < 0 ? '-' : '') + s + ' ' + (devise || 'XAF')
 }
@@ -31,56 +37,77 @@ function fmtDate(iso) {
   } catch { return String(iso) }
 }
 
-// Dessine du texte avec retour à la ligne manuel (pdf-lib ne wrap pas)
-function drawText(page, font, text, { x, y, size = 9, color = rgb(0.2, 0.2, 0.2), maxWidth, lineHeight }) {
-  if (!text) return y
+// Caractères hors WinAnsi (emoji, espaces spéciaux) → remplacés pour ne pas faire échouer drawText
+function winAnsi(s) {
+  return String(s ?? '')
+    .replace(/[   ]/g, ' ')
+    .replace(/[^\x20-\x7E -ÿ–—‘’“”…€Œœ]/g, '')
+}
 
-  if (!maxWidth) {
-    page.drawText(String(text), { x, y, size, font, color })
-    return y
-  }
+const MODES_PAIEMENT = {
+  especes: 'Espèces', carte: 'Carte bancaire', mobile_money: 'Mobile Money', virement: 'Virement',
+  cheque: 'Chèque', cinetpay: 'CinetPay', avoir: 'Avoir', compte: 'Compte client',
+}
 
-  const words = String(text).split(' ')
-  let line = ''
-  let curY = y
+const TYPES_EXCLUS_PRESTATIONS = new Set(['paiement', 'arrhes', 'taxe'])
 
-  for (const word of words) {
-    const test = line ? line + ' ' + word : word
-    const w    = font.widthOfTextAtSize(test, size)
-    if (w > maxWidth && line) {
-      page.drawText(line, { x, y: curY, size, font, color })
-      curY -= lineHeight
-      line = word
-    } else {
-      line = test
-    }
+/**
+ * Identité de l'hôtel pour la facture : colonnes `hotels`, complétées par
+ * parametres_supplementaires (adresse/email/niu/rccm), et taux des taxes actives.
+ */
+async function chargerHotelFacture(db, hotelId) {
+  const [hotel, taxes] = await Promise.all([
+    db('hotels AS h')
+      .leftJoin('parametres_hotel AS ph', 'ph.hotel_id', 'h.id')
+      .where('h.id', hotelId)
+      .select('h.nom', 'h.adresse', 'h.ville', 'h.pays', 'h.telephone', 'h.email', 'h.site_web', 'h.logo_url',
+        'ph.parametres_supplementaires AS ps', 'ph.tva_numero')
+      .first(),
+    db('taxes').where({ hotel_id: hotelId }).select('code', 'nom', 'type_taxe', 'valeur'),
+  ])
+  const ps = hotel?.ps || {}
+  return {
+    nom:       hotel?.nom || 'Hôtel',
+    adresse:   hotel?.adresse || ps.adresse || null,
+    ville:     [hotel?.ville, hotel?.pays].filter(v => v && v !== 'À renseigner').join(', ') || null,
+    telephone: hotel?.telephone || ps.telephone || null,
+    email:     hotel?.email || ps.email_contact || null,
+    site_web:  hotel?.site_web || null,
+    niu:       hotel?.tva_numero || ps.niu || ps.numero_contribuable || null,
+    rccm:      ps.rccm || null,
+    logo_url:  hotel?.logo_url || null,
+    taxes,
   }
-  if (line) {
-    page.drawText(line, { x, y: curY, size, font, color })
-    curY -= lineHeight
-  }
-  return curY
+}
+
+async function chargerLogo(doc, logoUrl) {
+  if (!logoUrl || !logoUrl.startsWith('/uploads/')) return null
+  try {
+    const bytes = await fs.readFile(path.join(RACINE, logoUrl))
+    if (bytes[0] === 0x89) return await doc.embedPng(bytes)
+    if (bytes[0] === 0xFF) return await doc.embedJpg(bytes)
+  } catch { /* logo absent ou illisible : facture sans logo */ }
+  return null
 }
 
 /**
- * genererFacturePDF(params) → { cheminRelatif: string }
+ * genererFacturePDF(params) → { cheminRelatif, filepath }
  *
- * @param {object} params
- * @param {object} params.facture        — enregistrement factures
- * @param {object} params.reservation    — réservation (dates, num, source)
- * @param {object} params.hotel          — hôtel (nom, adresse)
- * @param {object} params.client         — client (nom, email, telephone)
- * @param {Array}  params.lignes         — lignes du folio
- * @param {Array}  params.paiements      — paiements validés
- * @param {object} params.solde          — { total_debits, total_credits, solde_du }
+ * @param {object} params.facture     — enregistrement factures
+ * @param {object} params.reservation — réservation (dates, numéro)
+ * @param {object} params.hotel       — voir chargerHotelFacture (au minimum { nom })
+ * @param {object} params.client      — { nom, email, telephone }
+ * @param {Array}  params.lignes      — lignes du folio ({ ...ligne, montant })
+ * @param {Array}  params.paiements   — paiements du folio
+ * @param {object} params.solde       — { solde_du } (get_solde_folio)
  */
 async function genererFacturePDF({
   facture,
   reservation,
   hotel,
   client,
-  lignes   = [],
-  paiements= [],
+  lignes    = [],
+  paiements = [],
   solde,
 }) {
   await fs.mkdir(FACTURES_DIR, { recursive: true })
@@ -88,250 +115,192 @@ async function genererFacturePDF({
   const doc   = await PDFDocument.create()
   const fontR = await doc.embedFont(StandardFonts.Helvetica)
   const fontB = await doc.embedFont(StandardFonts.HelveticaBold)
+  const logo  = await chargerLogo(doc, hotel?.logo_url)
 
-  const pageW = 595
-  const pageH = 842
-  const ML    = 50   // margin left
-  const MR    = 545  // margin right
-
-  const gray1   = rgb(0.35, 0.35, 0.35)
-  const gray2   = rgb(0.6,  0.6,  0.6)
-  const blue    = rgb(0.12, 0.35, 0.75)
-  const black   = rgb(0,    0,    0)
-  const red     = rgb(0.80, 0.10, 0.10)
-  const green   = rgb(0.10, 0.60, 0.25)
-  const white   = rgb(1,    1,    1)
-  const greenBg = rgb(0.95, 0.98, 0.95)  // fond léger pour lignes paiement
+  const pageW = 595, pageH = 842
+  const ML = 48, MR = pageW - 48
+  const encre   = rgb(0.10, 0.13, 0.18)
+  const accent  = rgb(0.09, 0.27, 0.38)
+  const gris    = rgb(0.42, 0.45, 0.50)
+  const grisC   = rgb(0.62, 0.65, 0.69)
+  const filet   = rgb(0.86, 0.88, 0.90)
+  const fond    = rgb(0.965, 0.972, 0.98)
+  const vert    = rgb(0.09, 0.50, 0.27)
+  const rouge   = rgb(0.72, 0.13, 0.13)
+  const blanc   = rgb(1, 1, 1)
 
   const devise   = facture.devise || 'XAF'
-  const hotelNom = hotel?.nom || 'Hôtel'
+  const hotelNom = winAnsi(hotel?.nom || 'Hôtel')
 
-  // Toutes les pages créées — nécessaire pour la numérotation finale
-  const allPages = []
+  const pages = []
+  let page = doc.addPage([pageW, pageH]); pages.push(page)
+  let y
 
-  // Page courante (let pour permettre le changement de page)
-  let page = doc.addPage([pageW, pageH])
-  allPages.push(page)
-  let y = pageH - 45
-
-  // ── En-tête première page — bande bleue ──────────────────────────────────
-  page.drawRectangle({ x: 0, y: pageH - 85, width: pageW, height: 85, color: blue })
-
-  page.drawText('FACTURE', { x: ML, y: pageH - 35, size: 22, font: fontB, color: white })
-  page.drawText(facture.numero_facture || '—', { x: ML, y: pageH - 55, size: 12, font: fontR, color: rgb(0.8, 0.9, 1) })
-  page.drawText(`Date : ${fmtDate(facture.date_emission)}`, { x: ML, y: pageH - 70, size: 9, font: fontR, color: rgb(0.8, 0.9, 1) })
-
-  const hotelW = fontB.widthOfTextAtSize(hotelNom, 13)
-  page.drawText(hotelNom, { x: MR - hotelW, y: pageH - 35, size: 13, font: fontB, color: white })
-  if (hotel?.adresse) {
-    const addrW = fontR.widthOfTextAtSize(hotel.adresse, 8)
-    page.drawText(hotel.adresse, { x: MR - addrW, y: pageH - 50, size: 8, font: fontR, color: rgb(0.8, 0.9, 1) })
+  const txt = (t, x, yy, { size = 9, font = fontR, color = encre } = {}) =>
+    page.drawText(winAnsi(t), { x, y: yy, size, font, color })
+  const txtD = (t, xDroite, yy, opts = {}) => {
+    const f = opts.font || fontR, s = opts.size || 9
+    txt(t, xDroite - f.widthOfTextAtSize(winAnsi(t), s), yy, opts)
   }
-  if (hotel?.email) {
-    const emlW = fontR.widthOfTextAtSize(hotel.email, 8)
-    page.drawText(hotel.email, { x: MR - emlW, y: pageH - 63, size: 8, font: fontR, color: rgb(0.8, 0.9, 1) })
+  const ligneH = (yy, x1 = ML, x2 = MR, couleur = filet) =>
+    page.drawLine({ start: { x: x1, y: yy }, end: { x: x2, y: yy }, thickness: 0.6, color: couleur })
+  const tronquer = (t, f, s, largeur) => {
+    let v = winAnsi(t)
+    if (f.widthOfTextAtSize(v, s) <= largeur) return v
+    while (v.length > 1 && f.widthOfTextAtSize(v + '…', s) > largeur) v = v.slice(0, -1)
+    return v + '…'
   }
 
-  y = pageH - 105
-
-  // ── Blocs infos client / réservation ─────────────────────────────────────
-  // Client (gauche)
-  page.drawText('FACTURÉ À', { x: ML, y, size: 8, font: fontB, color: gray2 })
-  y -= 14
-  if (client?.nom) {
-    page.drawText(client.nom, { x: ML, y, size: 10, font: fontB, color: black })
-    y -= 13
-  }
-  if (client?.email) {
-    page.drawText(client.email, { x: ML, y, size: 9, font: fontR, color: gray1 })
-    y -= 12
-  }
-  if (client?.telephone) {
-    page.drawText(client.telephone, { x: ML, y, size: 9, font: fontR, color: gray1 })
-    y -= 12
-  }
-
-  // Réservation (droite)
-  const colR = 340
-  let yR = pageH - 105
-  page.drawText('RÉSERVATION', { x: colR, y: yR, size: 8, font: fontB, color: gray2 })
-  yR -= 14
-
-  const infoRes = [
-    ['N°',       reservation?.numero_reservation || '—'],
-    ['Arrivée',  fmtDate(reservation?.date_arrivee)],
-    ['Départ',   fmtDate(reservation?.date_depart)],
-    ['Nuits',    String(reservation?.nombre_nuits || '—')],
-  ]
-  for (const [label, val] of infoRes) {
-    page.drawText(label, { x: colR,       y: yR, size: 9, font: fontR, color: gray2 })
-    page.drawText(val,   { x: colR + 60,  y: yR, size: 9, font: fontB, color: black })
-    yR -= 13
-  }
-
-  y = Math.min(y, yR) - 20
-
-  // ── Ligne de séparation ───────────────────────────────────────────────────
-  page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) })
-  y -= 15
-
-  // ── Helpers multi-page ────────────────────────────────────────────────────
-
-  // Dessine l'en-tête colonnes du tableau sur la page courante.
-  // Modifie y via closure.
-  function drawTableHeader() {
-    page.drawRectangle({ x: ML, y: y - 2, width: MR - ML, height: 16, color: rgb(0.93, 0.95, 0.98) })
-    page.drawText('Description', { x: ML + 4, y: y + 1, size: 8, font: fontB, color: blue })
-    page.drawText('Type',        { x: 375,    y: y + 1, size: 8, font: fontB, color: blue })
-    page.drawText('Montant',     { x: 480,    y: y + 1, size: 8, font: fontB, color: blue })
-    y -= 18
-  }
-
-  // Passe à une nouvelle page PDF.
-  // - Écrit "Suite page X..." en bas de la page courante.
-  // - Crée la page, la pousse dans allPages, réinitialise page et y.
-  // - Si withTableHeader=true, dessine l'en-tête tableau (pour continuer le folio).
-  function startNewPage(withTableHeader = false) {
-    const nextNum  = allPages.length + 1
-    const suiteStr = `Suite page ${nextNum}...`
-    const suiteW   = fontR.widthOfTextAtSize(suiteStr, 8)
-    page.drawText(suiteStr, { x: MR - suiteW, y: 28, size: 8, font: fontR, color: gray2 })
-
-    page = doc.addPage([pageW, pageH])
-    allPages.push(page)
-    y = pageH - 50
-
-    if (withTableHeader) {
-      drawTableHeader()
-    }
-  }
-
-  // ── Tableau lignes folio ──────────────────────────────────────────────────
-  drawTableHeader()
-
-  if (lignes.length === 0) {
-    page.drawText('Aucune ligne de folio', { x: ML + 4, y, size: 9, font: fontR, color: gray2 })
-    y -= 15
+  // ── En-tête : identité hôtel (gauche) / facture (droite) ─────────────────
+  let yG = pageH - 48
+  if (logo) {
+    const k = Math.min(130 / logo.width, 56 / logo.height, 1)
+    const w = logo.width * k, h = logo.height * k
+    page.drawImage(logo, { x: ML, y: yG - h, width: w, height: h })
+    yG -= h + 12
+    txt(hotelNom, ML, yG, { size: 11, font: fontB })
   } else {
-    for (const l of lignes) {
-      // Débordement : passer à la page suivante avant de dessiner la ligne
-      if (y < 180) {
-        startNewPage(true)
-      }
-
-      // Fond alterné de ligne
-      page.drawRectangle({ x: ML, y: y - 3, width: MR - ML, height: 15, color: rgb(0.98, 0.98, 0.98), opacity: 0.5 })
-
-      // Description — 3 cas selon la longueur :
-      //   ≤ 55 chars → affichage direct (taille 9)
-      //   56-80 chars → wrapping sur la largeur colonne (ML+4 → x=370, ~312 px)
-      //   > 80 chars  → tronqué à 52 + "..."
-      const rawDesc = l.description || l.type_ligne || '—'
-      const rowY    = y  // référence y pour type et montant (toujours sur la 1re ligne)
-
-      if (rawDesc.length > 80) {
-        page.drawText(rawDesc.slice(0, 52) + '...', { x: ML + 4, y: rowY, size: 9, font: fontR, color: black })
-      } else if (rawDesc.length > 55) {
-        drawText(page, fontR, rawDesc, { x: ML + 4, y: rowY, size: 9, color: black, maxWidth: 312, lineHeight: 15 })
-      } else {
-        page.drawText(rawDesc, { x: ML + 4, y: rowY, size: 9, font: fontR, color: black })
-      }
-
-      // Type (colonne centrale élargie, x=375)
-      page.drawText(l.type_ligne || '—', { x: 375, y: rowY, size: 9, font: fontR, color: gray1 })
-
-      // Montant (aligné à droite jusqu'à MR)
-      const montantStr     = fmt(l.montant, devise)
-      const mW             = fontR.widthOfTextAtSize(montantStr, 9)
-      const couleurMontant = l.sens === 'credit' ? green : black
-      page.drawText(montantStr, { x: MR - mW - 4, y: rowY, size: 9, font: fontR, color: couleurMontant })
-
-      y -= 15  // lineHeight 15 pour meilleure lisibilité
-    }
+    yG -= 14
+    txt(hotelNom, ML, yG, { size: 16, font: fontB })
+  }
+  yG -= 13
+  for (const l of [
+    hotel?.adresse, hotel?.ville,
+    [hotel?.telephone && `Tél. ${hotel.telephone}`, hotel?.email].filter(Boolean).join('  ·  '),
+    [hotel?.niu && `NIU ${hotel.niu}`, hotel?.rccm && `RCCM ${hotel.rccm}`].filter(Boolean).join('  ·  '),
+  ].filter(Boolean)) {
+    txt(l, ML, yG, { size: 8.5, color: gris }); yG -= 11.5
   }
 
-  y -= 8
-  page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) })
-  y -= 15
+  let yD = pageH - 62
+  txtD('FACTURE', MR, yD, { size: 22, font: fontB, color: accent }); yD -= 18
+  txtD(facture.numero_facture || '—', MR, yD, { size: 11, font: fontB }); yD -= 14
+  txtD(`Émise le ${fmtDate(facture.date_emission || facture.cree_le)}`, MR, yD, { size: 8.5, color: gris }); yD -= 18
 
-  // ── Guard espace avant synthèse ───────────────────────────────────────────
-  // Si le folio long a laissé peu de place, passer à une page dédiée au récap.
-  if (y <= 200) {
-    startNewPage(false)
-    y -= 10  // petite marge en haut de la page récap
+  const soldeDu   = Number(solde?.solde_du ?? facture.montant_du ?? 0)
+  const acquittee = soldeDu <= 0.5
+  const statutTxt = acquittee ? 'ACQUITTÉE' : 'SOLDE DÛ'
+  const sw = fontB.widthOfTextAtSize(statutTxt, 8) + 16
+  page.drawRectangle({ x: MR - sw, y: yD - 5, width: sw, height: 16, color: acquittee ? vert : rouge })
+  txtD(statutTxt, MR - 8, yD, { size: 8, font: fontB, color: blanc })
+  yD -= 14
+
+  y = Math.min(yG, yD) - 14
+  ligneH(y, ML, MR, accent)
+  y -= 22
+
+  // ── Facturé à / Séjour ──────────────────────────────────────────────────
+  const colR = 320
+  txt('FACTURÉ À', ML, y, { size: 7.5, font: fontB, color: grisC })
+  txt('SÉJOUR', colR, y, { size: 7.5, font: fontB, color: grisC })
+  let yC = y - 15, yS = y - 15
+  if (client?.nom)       { txt(client.nom, ML, yC, { size: 10.5, font: fontB }); yC -= 13 }
+  if (client?.email)     { txt(client.email, ML, yC, { size: 8.5, color: gris }); yC -= 11.5 }
+  if (client?.telephone) { txt(client.telephone, ML, yC, { size: 8.5, color: gris }); yC -= 11.5 }
+  const nuits = reservation?.nombre_nuits
+  for (const [label, val] of [
+    ['Réservation', reservation?.numero_reservation || '—'],
+    ['Arrivée',     fmtDate(reservation?.date_arrivee)],
+    ['Départ',      fmtDate(reservation?.date_depart)],
+    ['Nuits',       nuits != null ? String(nuits) : '—'],
+  ]) {
+    txt(label, colR, yS, { size: 8.5, color: gris })
+    txt(val, colR + 72, yS, { size: 8.5, font: fontB })
+    yS -= 12.5
+  }
+  y = Math.min(yC, yS) - 18
+
+  // ── Prestations ─────────────────────────────────────────────────────────
+  const colDate = 380
+  function enteteTableau() {
+    page.drawRectangle({ x: ML, y: y - 6, width: MR - ML, height: 20, color: fond })
+    txt('DÉSIGNATION', ML + 8, y, { size: 7.5, font: fontB, color: gris })
+    txt('DATE', colDate, y, { size: 7.5, font: fontB, color: gris })
+    txtD('MONTANT', MR - 8, y, { size: 7.5, font: fontB, color: gris })
+    y -= 22
+  }
+  function nouvellePage(avecEntete) {
+    page = doc.addPage([pageW, pageH]); pages.push(page)
+    y = pageH - 56
+    txt(`${hotelNom} — ${facture.numero_facture || ''} (suite)`, ML, y, { size: 8, color: grisC })
+    y -= 24
+    if (avecEntete) enteteTableau()
   }
 
-  // ── Récapitulatif montants ────────────────────────────────────────────────
-  const recapX  = 380
-  const recapVX = MR - 4
-
-  function drawRecapLine(label, valeur, bold = false, color = black) {
-    const f  = bold ? fontB : fontR
-    const vW = f.widthOfTextAtSize(valeur, 9)
-    page.drawText(label,  { x: recapX, y, size: 9, font: fontR, color: gray1 })
-    page.drawText(valeur, { x: recapVX - vW, y, size: 9, font: f, color })
-    y -= 13
+  txt('PRESTATIONS', ML, y, { size: 7.5, font: fontB, color: grisC }); y -= 14
+  enteteTableau()
+  const prestations = lignes.filter(l => !TYPES_EXCLUS_PRESTATIONS.has(l.type_ligne))
+  if (!prestations.length) { txt('Aucune prestation', ML + 8, y, { color: grisC }); y -= 16 }
+  for (const l of prestations) {
+    if (y < 210) nouvellePage(true)
+    const credit = l.sens === 'credit'
+    txt(tronquer(l.description || l.type_ligne || '—', fontR, 9, colDate - ML - 24), ML + 8, y)
+    txt(fmtDate(l.date_service || l.cree_le), colDate, y, { size: 8.5, color: gris })
+    txtD(fmt(credit ? -Number(l.montant) : l.montant, devise), MR - 8, y, { color: credit ? vert : encre })
+    y -= 7; ligneH(y, ML, MR); y -= 12
   }
 
-  drawRecapLine('Total HT',    fmt(facture.montant_ht,    devise))
-  drawRecapLine('Taxes',       fmt(facture.montant_taxes, devise))
+  // ── Récapitulatif ───────────────────────────────────────────────────────
+  // Taxes regroupées par code (taux depuis la table taxes de l'hôtel) ; montants du folio.
+  const taux = Object.fromEntries((hotel?.taxes || []).map(t => [t.code, t]))
+  const groupes = new Map()
+  for (const l of lignes.filter(x => x.type_ligne === 'taxe')) {
+    const code = l.metadata?.code
+    const t = code && taux[code]
+    const libelle = t
+      ? (t.type_taxe === 'pourcentage' ? `${t.nom} (${String(Number(t.valeur)).replace('.', ',')} %)` : t.nom)
+      : String(l.description || 'Taxe').split(' — ')[0]
+    const signe = l.sens === 'credit' ? -1 : 1
+    groupes.set(libelle, (groupes.get(libelle) || 0) + signe * Number(l.montant || 0))
+  }
 
-  // Ligne TTC avec fond bleu
-  y -= 2
-  page.drawRectangle({ x: recapX - 6, y: y - 3, width: MR - recapX + 10, height: 18, color: blue })
-  const ttcLabel = 'TOTAL TTC'
-  const ttcVal   = fmt(facture.montant_ttc, devise)
-  const ttcVW    = fontB.widthOfTextAtSize(ttcVal, 11)
-  page.drawText(ttcLabel, { x: recapX, y: y + 1, size: 10, font: fontB, color: white })
-  page.drawText(ttcVal,   { x: recapVX - ttcVW, y: y + 1, size: 11, font: fontB, color: white })
-  y -= 20
-
-  // Paiements — fond vert léger (greenBg) sur chaque ligne pour meilleure visibilité
   const paiementsValides = paiements.filter(p => p.statut === 'valide')
-  if (paiementsValides.length > 0) {
-    y -= 5
-    page.drawText('PAIEMENTS REÇUS', { x: recapX, y, size: 7, font: fontB, color: gray2 })
-    y -= 12
-    for (const p of paiementsValides) {
-      page.drawRectangle({ x: recapX - 4, y: y - 3, width: MR - recapX + 8, height: 14, color: greenBg })
-      drawRecapLine(`  ${p.type_paiement || '-'} - ${fmtDate(p.cree_le)}`, `-${fmt(p.montant, devise)}`, false, green)
-    }
-  }
+  const hauteurRecap = 120 + groupes.size * 14 + paiementsValides.length * 14
+  if (y - hauteurRecap < 70) nouvellePage(false)
+  y -= 8
 
-  // Solde final
-  const soldeDu    = Number(solde?.solde_du ?? 0)
+  const rX = 330, rV = MR - 8
+  const recap = (label, valeur, { gras = false, couleur = encre, taille = 9 } = {}) => {
+    txt(label, rX, y, { size: taille, color: gras ? encre : gris, font: gras ? fontB : fontR })
+    txtD(valeur, rV, y, { size: taille, font: gras ? fontB : fontR, color: couleur })
+    y -= 15
+  }
+  recap('Total HT', fmt(facture.montant_ht, devise))
+  for (const [libelle, montant] of groupes) recap(libelle, fmt(montant, devise))
+  if (!groupes.size && Number(facture.montant_taxes)) recap('Taxes', fmt(facture.montant_taxes, devise))
+
   y -= 4
-  const soldeColor = soldeDu > 0 ? red : green
-  const soldeLabel = soldeDu > 0 ? 'SOLDE RESTANT DU' : 'SOLDE ACQUITTE'
-  const soldeVal   = fmt(Math.abs(soldeDu), devise)
-  const soldeVW    = fontB.widthOfTextAtSize(soldeVal, 10)
-  page.drawText(soldeLabel, { x: recapX, y, size: 9, font: fontB, color: soldeColor })
-  page.drawText(soldeVal,   { x: recapVX - soldeVW, y, size: 10, font: fontB, color: soldeColor })
-  y -= 20
+  page.drawRectangle({ x: rX - 10, y: y - 8, width: MR - rX + 10, height: 24, color: accent })
+  txt('TOTAL TTC', rX, y, { size: 10, font: fontB, color: blanc })
+  txtD(fmt(facture.montant_ttc, devise), rV, y, { size: 12, font: fontB, color: blanc })
+  y -= 30
 
-  // ── Pied de page (dernière page) ─────────────────────────────────────────
-  const footer = `${hotelNom} · Facture générée le ${fmtDate(new Date().toISOString())} · 7venHotel Cloud PMS`
-  page.drawLine({ start: { x: ML, y: 40 }, end: { x: MR, y: 40 }, thickness: 0.5, color: rgb(0.85, 0.85, 0.85) })
-  page.drawText(footer, { x: ML, y: 28, size: 7, font: fontR, color: gray2 })
+  if (Number(facture.montant_arrhes) > 0) recap('Arrhes déduites', `-${fmt(facture.montant_arrhes, devise)}`, { couleur: vert })
+  for (const p of paiementsValides) {
+    const ref = p.reference_externe ? ` · ${p.reference_externe}` : ''
+    recap(`${MODES_PAIEMENT[p.type_paiement] || p.type_paiement || 'Paiement'} — ${fmtDate(p.cree_le)}${ref}`,
+      `-${fmt(p.montant, devise)}`, { couleur: vert, taille: 8.5 })
+  }
+  y -= 2; ligneH(y + 8, rX - 10, MR)
+  recap(acquittee ? 'Solde' : 'Solde restant dû', fmt(Math.max(soldeDu, 0), devise),
+    { gras: true, couleur: acquittee ? vert : rouge, taille: 10 })
 
-  // ── Numérotation "Page N / Total" centrée en bas de chaque page ──────────
-  if (allPages.length > 1) {
-    const total = allPages.length
-    for (let i = 0; i < total; i++) {
-      const pg     = allPages[i]
-      const numTxt = `Page ${i + 1} / ${total}`
-      const numW   = fontR.widthOfTextAtSize(numTxt, 7)
-      pg.drawText(numTxt, { x: (pageW - numW) / 2, y: 15, size: 7, font: fontR, color: gray2 })
-    }
+  // ── Pied de page ────────────────────────────────────────────────────────
+  for (let i = 0; i < pages.length; i++) {
+    page = pages[i]
+    ligneH(52)
+    txt(`Montants exprimés en ${devise === 'XAF' ? 'francs CFA (XAF)' : devise}.  Merci de votre séjour à ${hotelNom}.`,
+      ML, 38, { size: 7.5, color: gris })
+    txt(`Facture générée le ${fmtDate(new Date().toISOString())} · 7venHotel Cloud`, ML, 26, { size: 7, color: grisC })
+    if (pages.length > 1) txtD(`Page ${i + 1} / ${pages.length}`, MR, 26, { size: 7, color: grisC })
   }
 
-  // ── Sauvegarder le PDF ───────────────────────────────────────────────────
   const pdfBytes = await doc.save()
-  const filename  = `facture-${facture.id}.pdf`
-  const filepath  = path.join(FACTURES_DIR, filename)
+  const filename = `facture-${facture.id}.pdf`
+  const filepath = path.join(FACTURES_DIR, filename)
   await fs.writeFile(filepath, pdfBytes)
 
   return { cheminRelatif: `factures/${filename}`, filepath }
 }
 
-module.exports = { genererFacturePDF, FACTURES_DIR }
+module.exports = { genererFacturePDF, chargerHotelFacture, FACTURES_DIR }

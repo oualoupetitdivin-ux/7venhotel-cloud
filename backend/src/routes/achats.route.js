@@ -1,4 +1,6 @@
 'use strict'
+
+const comptabilite = require('../services/comptabilite.bridge')
 module.exports = async function achatsRoutes(fastify) {
   const pre     = [fastify.authentifier, fastify.contexteHotel]
   const preAcces = [...pre, fastify.verifierRole(['manager', 'restaurant'])]
@@ -65,6 +67,8 @@ module.exports = async function achatsRoutes(fastify) {
         article_id:         l.article_id,
         quantite_commandee: l.quantite_commandee,
         prix_unitaire:      l.prix_unitaire,
+        // LOT-PMS-02 — TVA fournisseur optionnelle (NULL = inconnue → achat comptabilisé HT seul)
+        taux_tva:           l.taux_tva ?? null,
       })))
 
       return rowBon
@@ -172,6 +176,7 @@ module.exports = async function achatsRoutes(fastify) {
       return rowBon
     })
 
+    await comptabilite.publier(fastify.db, { source: 'bon_achat', id: bon.id, hotelId: req.hotelId, userId: req.user.id, log: req.log })
     reply.send({ message: 'Réception enregistrée', bon })
   })
 

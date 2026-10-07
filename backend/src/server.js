@@ -163,10 +163,27 @@ async function registerPlugins() {
     credentials: true
   })
 
-  // Rate limiting
+  // Rate limiting global (par IP)
+  // QA-01 : 200 requêtes / 15 min par IP bloquait l'application en usage normal (≈5 écrans,
+  // chaque écran faisant 5–8 appels + polling) et TOUT le personnel d'un hôtel partage la même
+  // IP publique (NAT). Recalibré en fenêtre courte. Les routes sensibles gardent leurs limites
+  // strictes propres : connexion staff/client (10 / 15 min), booking, check-in en ligne, paiement.
+  // HELICONIA-READY-01 : clé par IP seule → 8 testeurs derrière la même IP partageaient
+  // les 300 req/min et prenaient des 429 en navigation normale (mesuré). Clé = utilisateur
+  // du JWT (signature vérifiée, une clé forgée ne peut pas multiplier les quotas) ; IP sinon.
   await server.register(require('@fastify/rate-limit'), {
-    max:        parseInt(process.env.RATE_LIMIT_MAX)    || 200,
-    timeWindow: `${process.env.RATE_LIMIT_WINDOW || 15} minutes`
+    max:        parseInt(process.env.RATE_LIMIT_MAX)    || 300,
+    timeWindow: `${process.env.RATE_LIMIT_WINDOW || 1} minutes`,
+    keyGenerator: (req) => {
+      const auth = req.headers.authorization
+      if (auth && auth.startsWith('Bearer ')) {
+        try {
+          const payload = server.jwt.verify(auth.slice(7))
+          if (payload?.id) return `u:${payload.id}`
+        } catch { /* jeton invalide/expiré → quota IP */ }
+      }
+      return `ip:${req.ip}`
+    }
   })
 
   // ───────────────────────────────────────────────────────────────────
@@ -219,8 +236,23 @@ async function registerPlugins() {
   // Authentification middleware
   await server.register(require('./plugins/auth'))
 
+  // Audit Engine (logs_audit strict, OHADA traçabilité)
+  await server.register(require('./engines/audit.engine'))
+
+  // Tenant Lifecycle Engine (FSM états tenant : lead → essai → actif → suspendu → résilié)
+  await server.register(require('./engines/tenant.lifecycle'))
+
   // Platform Config Engine (plans, modules, flags, providers, settings)
   await server.register(require('./engines/platform.config.engine'))
+
+  // Policy Engine (quota enforcement, feature gates, subscription context)
+  await server.register(require('./engines/policy.engine'))
+
+  // Billing Engine (billing_periods, invoices, items — A3)
+  await server.register(require('./engines/billing.engine'))
+
+  // Accounting Engine — Finance OHADA (LOT-OHADA-01)
+  await server.register(require('./engines/accounting.engine'))
 
   // Swagger docs (développement uniquement)
   if (process.env.NODE_ENV !== 'production') {
@@ -370,14 +402,34 @@ await server.register(async function(app) {
   // ✅ ESPACE CLIENT connecté (app web /client-portal — JWT type:'client')
   await app.register(require('./routes/portail-client.route'), { prefix: '/client' })
 
+  await app.register(require('./routes/onboarding.route'),      { prefix: '/onboarding' })
   await app.register(require('./routes/booking'), { prefix: '/booking' })
   await app.register(require('./routes/paiement-online.route'), { prefix: '/paiement-online' })
+  // LOT-GUEST-01 — check-in en ligne (lien à usage unique)
+  await app.register(require('./routes/checkin-en-ligne.route'), { prefix: '/checkin-en-ligne' })
 
   // ── Plateforme SaaS (super_admin uniquement) ──────────────────────
   await app.register(require('./routes/platform.route'),            { prefix: '/platform' })
   await app.register(require('./routes/platform.iam.route'),        { prefix: '/platform/iam' })
   await app.register(require('./routes/platform.config.route'),     { prefix: '/platform/config' })
   await app.register(require('./routes/platform.onboarding.route'), { prefix: '/platform' })
+  await app.register(require('./routes/platform.billing.route'),    { prefix: '/platform' })
+
+  // ── Modules opérationnels (LOT-REGISTER-01) ───────────────────────
+  await app.register(require('./routes/caisse.route'),       { prefix: '/caisse' })
+  await app.register(require('./routes/charges.route'),      { prefix: '/charges' })
+  await app.register(require('./routes/stock.route'),        { prefix: '/stock' })
+  await app.register(require('./routes/catalogue.route'),    { prefix: '/catalogue' })
+  await app.register(require('./routes/fidelite.route'),     { prefix: '/fidelite' })
+  await app.register(require('./routes/arrhes.route'),       { prefix: '/arrhes' })
+  await app.register(require('./routes/achats.route'),       { prefix: '/achats' })
+  await app.register(require('./routes/fournisseurs.route'), { prefix: '/fournisseurs' })
+  await app.register(require('./routes/evenements.route'),   { prefix: '/evenements' })
+  await app.register(require('./routes/eca.route'),          { prefix: '/eca' })
+  // QA-01 — écrans Types de chambre et alertes du tableau de bord : routes existantes jamais enregistrées
+  await app.register(require('./routes/types-chambre'),      { prefix: '/types-chambre' })
+  await app.register(require('./routes/notifications'),      { prefix: '/notifications' })
+  await app.register(require('./routes/finance.route'),      { prefix: '/finance' })
 
   // ─────────────────────────────────────────────────────────────────
   // Route /seed désactivée en production

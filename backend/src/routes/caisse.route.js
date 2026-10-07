@@ -1,5 +1,7 @@
 'use strict'
 
+const comptabilite = require('../services/comptabilite.bridge')
+
 const { ValidationError, NotFoundError, ConflictError } = require('../errors')
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -16,13 +18,56 @@ module.exports = async function caisseRoutes(fastify) {
   const rolesOperer  = fastify.verifierRole(['manager', 'reception'])
   const rolesCloturer = fastify.verifierRole(['manager', 'comptabilite'])
 
-  // Somme des encaissements espèces valides pour la journée de la session.
-  async function sommeEncaissementsEspeces(hotelId, session) {
-    const [{ total }] = await fastify.db('paiements')
+  // ── Montant théorique d'une session (LOT-PMS-02) ────────────────────────────
+  // Théorique = fond d'ouverture
+  //           + encaissements espèces DE LA SESSION (paiements valides, arrhes espèces reçues)
+  //           − sorties d'espèces DE LA SESSION (décaissements, retraits, remboursements d'arrhes
+  //             espèces, contre-passations de paiements espèces)
+  // Fenêtre = [ouverte_le (horodatage réel) ; clôture (ou maintenant)]. Auparavant : paiements de la
+  // journée calendaire uniquement, décaissements ignorés → écart faux.
+  async function calculerTheorique(hotelId, session, jusqua = null) {
+    const db  = fastify.db
+    const fin = jusqua || session.fermee_le || new Date()
+    const dansSession = (col) => db.raw(`${col} >= ? AND ${col} <= ?`, [session.ouverte_le, fin])
+
+    const [{ total: paiements }] = await db('paiements')
       .where({ hotel_id: hotelId, type_paiement: 'especes', statut: 'valide' })
-      .andWhereRaw('DATE(COALESCE(traite_le, cree_le)) = DATE(?)', [session.ouverte_le])
+      .andWhere(dansSession('COALESCE(confirme_le, traite_le, cree_le)'))
       .sum('montant AS total')
-    return parseFloat(total || 0)
+
+    const [{ total: contrePassations }] = await db('lignes_folio AS corr')
+      .join('lignes_folio AS orig', 'orig.id', 'corr.ligne_corrigee_id')
+      .join('paiements AS p', db.raw('p.id = orig.reference_id'))
+      .where({ 'corr.hotel_id': hotelId, 'corr.type_ligne': 'correction', 'corr.sens': 'debit',
+               'orig.type_ligne': 'paiement', 'p.type_paiement': 'especes' })
+      .andWhere(dansSession('corr.cree_le'))
+      .sum('corr.montant_total AS total')
+
+    const arrhes = await db('lignes_folio')
+      .where({ hotel_id: hotelId, type_ligne: 'arrhes' })
+      .andWhereRaw("metadata->>'mode_paiement' = 'especes'")
+      .andWhere(dansSession('cree_le'))
+      .select(db.raw("COALESCE(SUM(montant_total) FILTER (WHERE sens = 'credit'), 0) AS recues"),
+              db.raw("COALESCE(SUM(montant_total) FILTER (WHERE sens = 'debit' AND metadata->>'nature' = 'remboursement'), 0) AS remboursees"))
+      .first()
+
+    const [{ total: sorties }] = await db('mouvements_caisse')
+      .where({ session_id: session.id, hotel_id: hotelId })
+      .whereIn('type_mouvement', ['decaissement', 'retrait'])
+      .sum('montant AS total')
+
+    const n = (v) => parseFloat(v || 0)
+    const detail = {
+      fond_ouverture:             n(session.fond_ouverture),
+      encaissements_paiements:    n(paiements),
+      encaissements_arrhes:       n(arrhes.recues),
+      sorties_mouvements:         n(sorties),
+      remboursements_arrhes:      n(arrhes.remboursees),
+      contre_passations_paiements: n(contrePassations),
+    }
+    const theorique = detail.fond_ouverture + detail.encaissements_paiements + detail.encaissements_arrhes
+      - detail.sorties_mouvements - detail.remboursements_arrhes - detail.contre_passations_paiements
+    return { theorique: Math.round(theorique * 100) / 100, encaissements: detail.encaissements_paiements + detail.encaissements_arrhes, detail }
   }
 
   // ── GET /caisse/session-active — session en cours (null si aucune) ─────────
@@ -33,12 +78,13 @@ module.exports = async function caisseRoutes(fastify) {
 
     if (!session) return reply.send({ session: null })
 
-    const encaissementsEspeces = await sommeEncaissementsEspeces(req.hotelId, session)
+    const calcul = await calculerTheorique(req.hotelId, session)
     return reply.send({
       session: {
         ...session,
-        encaissements_especes: encaissementsEspeces,
-        total_theorique: parseFloat(session.fond_ouverture) + encaissementsEspeces,
+        encaissements_especes: calcul.encaissements,
+        total_theorique: calcul.theorique,
+        detail_theorique: calcul.detail,
       },
     })
   })
@@ -90,7 +136,8 @@ module.exports = async function caisseRoutes(fastify) {
       .leftJoin('folios AS f', 'f.id', 'p.folio_id')
       .leftJoin('clients AS c', 'c.id', 'f.client_id')
       .where({ 'p.hotel_id': req.hotelId, 'p.type_paiement': 'especes', 'p.statut': 'valide' })
-      .andWhereRaw('DATE(COALESCE(p.traite_le, p.cree_le)) = DATE(?)', [session.ouverte_le])
+      // LOT-PMS-02 — encaissements DE LA SESSION (et non de la journée calendaire)
+      .andWhereRaw('COALESCE(p.confirme_le, p.traite_le, p.cree_le) >= ?', [session.ouverte_le])
       .select(
         'p.*',
         fastify.db.raw('f.numero_folio'),
@@ -129,6 +176,7 @@ module.exports = async function caisseRoutes(fastify) {
     }).returning('*')
 
     req.log.info({ mouvement_id: mouvement.id, session_id: session.id, type_mouvement, montant }, 'Mouvement de caisse enregistré')
+    await comptabilite.publier(fastify.db, { source: 'mouvement_caisse', id: mouvement.id, hotelId: req.hotelId, userId: req.user.id, log: req.log })
     return reply.status(201).send({ message: 'Mouvement enregistré', mouvement })
   })
 
@@ -143,9 +191,11 @@ module.exports = async function caisseRoutes(fastify) {
       .first()
     if (!session) throw new ConflictError('Aucune session de caisse ouverte', 'SESSION_INEXISTANTE')
 
-    const encaissementsEspeces = await sommeEncaissementsEspeces(req.hotelId, session)
-    const montantTheorique     = parseFloat(session.fond_ouverture) + encaissementsEspeces
-    const ecart                = Number(montant_compte) - montantTheorique
+    // Un seul instant de référence : le théorique couvre exactement [ouverture ; fermee_le]
+    const instantCloture   = new Date()
+    const calcul           = await calculerTheorique(req.hotelId, session, instantCloture)
+    const montantTheorique = calcul.theorique
+    const ecart            = Math.round((Number(montant_compte) - montantTheorique) * 100) / 100
 
     const [cloturee] = await fastify.db('sessions_caisse')
       .where({ id: session.id, hotel_id: req.hotelId })
@@ -154,14 +204,15 @@ module.exports = async function caisseRoutes(fastify) {
         montant_theorique: montantTheorique,
         montant_compte: Number(montant_compte),
         ecart,
-        fermee_le: fastify.db.fn.now(),
+        fermee_le: instantCloture,
         fermee_par: req.user.id,
         notes_cloture: notes || null,
       })
       .returning('*')
 
     req.log.info({ session_id: session.id, hotel_id: req.hotelId, ecart }, 'Session de caisse clôturée')
-    return reply.send({ message: 'Caisse clôturée', session: cloturee })
+    await comptabilite.publier(fastify.db, { source: 'session_caisse', id: session.id, hotelId: req.hotelId, userId: req.user.id, log: req.log })
+    return reply.send({ message: 'Caisse clôturée', session: cloturee, detail_theorique: calcul.detail })
   })
 
   // ── GET /caisse/historique — sessions clôturées (30 derniers jours) ────────

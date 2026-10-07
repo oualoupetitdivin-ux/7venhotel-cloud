@@ -140,7 +140,9 @@ export default function CuisineKDS() {
                       <div className="flex items-start justify-between gap-2 mb-2">
                         <div>
                           <div className="font-black text-base leading-tight">
-                            Table {c.numero_table || c.numero_chambre || '—'}
+                            {c.numero_chambre && !c.numero_table
+                              ? <>🛎 Chambre {c.numero_chambre}</>
+                              : <>Table {c.numero_table || '—'}</>}
                           </div>
                           <div className="text-[9px] text-gray-600 font-mono mt-0.5">{c.numero_commande}</div>
                         </div>

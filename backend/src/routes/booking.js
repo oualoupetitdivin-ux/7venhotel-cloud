@@ -2,30 +2,74 @@
 
 const { createReservationsService } = require('../services/reservations.service')
 const { createFacturationService }  = require('../services/facturation.service')
+const { createCheckinEnLigneService } = require('../services/checkin-en-ligne.service')
+const { signerJetonClient } = require('../utils/jetonClient')
+
+// LOT-GUEST-01 — Une réservation online reste 'tentative' tant que le paiement n'est pas
+// confirmé. Sans expiration, une réservation abandonnée bloquait la chambre indéfiniment.
+// Délai aligné sur la session de paiement en ligne (paiements_online.expire_le = 30 min).
+const TTL_TENTATIVE_MIN = parseInt(process.env.BOOKING_TENTATIVE_TTL_MIN || '30', 10)
+const DATE = /^\d{4}-\d{2}-\d{2}$/
+const aujourdhui = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
 
 module.exports = async function bookingRoutes(fastify) {
 
   const reservationsService = createReservationsService({ db: fastify.db, cache: fastify.cache })
   const facturationService  = createFacturationService({ db: fastify.db, cache: fastify.cache })
+  const checkinService      = createCheckinEnLigneService({ db: fastify.db })
+
+  // Annule (via le service PMS : folio neutralisé, portail révoqué) les réservations online
+  // restées 'tentative' au-delà du délai sans paiement validé ; paiements en attente → echec.
+  async function expirerTentatives(hotelId) {
+    const perimees = await fastify.db('reservations AS r')
+      .where({ 'r.hotel_id': hotelId, 'r.statut': 'tentative', 'r.source': 'online' })
+      .where('r.cree_le', '<', fastify.db.raw(`NOW() - INTERVAL '${TTL_TENTATIVE_MIN} minutes'`))
+      .whereNotExists(function () {
+        this.select(1).from('paiements AS p').whereRaw('p.reservation_id = r.id OR p.folio_id IN (SELECT id FROM folios WHERE reservation_id = r.id)')
+          .where('p.statut', 'valide')
+      })
+      .select('r.id')
+    for (const { id } of perimees) {
+      try {
+        await reservationsService.annulerReservation(id, hotelId, null, `Expiration — paiement non reçu sous ${TTL_TENTATIVE_MIN} min`)
+        await fastify.db('paiements').where({ hotel_id: hotelId, statut: 'en_attente' })
+          .whereIn('folio_id', fastify.db('folios').select('id').where({ reservation_id: id }))
+          .update({ statut: 'echec', notes: fastify.db.raw("COALESCE(notes,'') || ' [expiration réservation online]'") })
+      } catch (err) {
+        fastify.log.warn({ reservation_id: id, err: err.message }, 'Expiration tentative impossible')
+      }
+    }
+    return perimees.length
+  }
+
+  function validerDates(date_arrivee, date_depart) {
+    if (!DATE.test(String(date_arrivee || '')) || !DATE.test(String(date_depart || ''))) return 'Dates au format AAAA-MM-JJ requises'
+    if (date_depart <= date_arrivee) return "La date de départ doit suivre la date d'arrivée"
+    if (date_arrivee < aujourdhui()) return "La date d'arrivée est passée"
+    return null
+  }
 
   // ── GET /disponibilite/:hotel_slug ─────────────────────────────────────────
   // Retourne chambres disponibles sur la période + taxes hébergement de l'hôtel.
   // Public — aucune authentification requise.
   fastify.get('/disponibilite/:hotel_slug', async (req, reply) => {
     const { date_arrivee, date_depart } = req.query
-    if (!date_arrivee || !date_depart)
-      return reply.status(400).send({ erreur: 'Dates requises' })
+    const erreurDates = validerDates(date_arrivee, date_depart)
+    if (erreurDates) return reply.status(400).send({ erreur: erreurDates, code: 'DATES_INVALIDES' })
 
     const hotel = await fastify.db('hotels')
       .where({ slug: req.params.hotel_slug, actif: true })
       .first()
     if (!hotel) return reply.status(404).send({ erreur: 'Hôtel introuvable' })
 
+    await expirerTentatives(hotel.id)
+
     const reservees = await fastify.db('reservations')
       .where({ hotel_id: hotel.id })
       .whereNotIn('statut', ['annulee', 'no_show'])
       .where('date_arrivee', '<', date_depart)
       .where('date_depart',  '>', date_arrivee)
+      .whereNotNull('chambre_id')   // LOT-GUEST-01 : un NULL dans NOT IN excluait TOUTES les chambres
       .pluck('chambre_id')
 
     const chambres = await fastify.db('chambres AS ch')
@@ -87,10 +131,15 @@ module.exports = async function bookingRoutes(fastify) {
     if (type_paiement === 'mobile_money' && !numero_telephone)
       return reply.status(400).send({ erreur: 'Numéro de téléphone requis pour mobile money' })
 
+    const erreurDates = validerDates(date_arrivee, date_depart)
+    if (erreurDates) return reply.status(400).send({ erreur: erreurDates, code: 'DATES_INVALIDES' })
+
     const hotel = await fastify.db('hotels')
       .where({ slug: hotel_slug, actif: true })
       .first()
     if (!hotel) return reply.status(404).send({ erreur: 'Hôtel introuvable' })
+
+    await expirerTentatives(hotel.id)
 
     // Trouver ou créer le client
     let clientRec = await fastify.db('clients')
@@ -163,17 +212,11 @@ module.exports = async function bookingRoutes(fastify) {
       paiement = result.paiement
     }
 
-    // Générer le token JWT client
-    const jwtClient = fastify.jwt.sign(
-      {
-        id:        clientRec.id,
-        email:     clientRec.email,
-        type:      'client',
-        hotel_id:  hotel.id,
-        tenant_id: hotel.tenant_id,
-      },
-      { expiresIn: process.env.JWT_CLIENT_EXPIRES_IN || '24h' }
-    )
+    // Jeton espace client — clé CLIENT (refusé par l'authentification staff, LOT-GUEST-01)
+    const jwtClient = signerJetonClient(fastify, clientRec, hotel)
+
+    // Lien de check-in en ligne (utilisable dès la confirmation du paiement)
+    const checkin = await checkinService.genererLien({ reservationId: reservation.id, hotelId: hotel.id, acteurId: null })
 
     reply.status(202).send({
       message:        'Réservation en attente de confirmation de paiement',
@@ -183,6 +226,8 @@ module.exports = async function bookingRoutes(fastify) {
       montant:        reservation.total_general,
       paiement_id:    paiement?.id || null,
       token_client:   jwtClient,
+      checkin_en_ligne_url: checkin.url,
+      checkin_en_ligne_expire_le: checkin.expire_le,
     })
   })
 }

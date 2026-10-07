@@ -11,6 +11,19 @@ export default function ClientPortal() {
   const [resSelectionnee, setResSelectionnee] = useState(null)
   const [folio, setFolio] = useState(null)
   const [loadingFolio, setLoadingFolio] = useState(false)
+  const [factures, setFactures] = useState([])
+  const [erreurCheckin, setErreurCheckin] = useState('')
+
+  // LOT-GUEST-01 — check-in en ligne réel : génère le lien de SA réservation puis y redirige
+  async function ouvrirCheckin(res) {
+    setErreurCheckin('')
+    try {
+      const { data } = await portailClientAPI.checkinEnLigne(res.id)
+      window.location.href = data.url
+    } catch (err) {
+      setErreurCheckin(err?.response?.data?.erreur || 'Check-in en ligne indisponible pour cette réservation')
+    }
+  }
 
   const hotelSlug = typeof window !== 'undefined' ? localStorage.getItem('7vh_hotel_slug') || '' : ''
 
@@ -22,9 +35,12 @@ export default function ClientPortal() {
 
   async function charger() {
     try {
-      const [profRes, resRes] = await Promise.allSettled([portailClientAPI.profil(), portailClientAPI.reservations()])
+      const [profRes, resRes, facRes] = await Promise.allSettled([portailClientAPI.profil(), portailClientAPI.reservations(), portailClientAPI.factures()])
+      const expire = [profRes, resRes].some(x => x.status === 'rejected' && x.reason?.response?.status === 401)
+      if (expire) { localStorage.removeItem('7vh_client_token'); window.location.href = '/client-portal/connexion'; return }
       if (profRes.status === 'fulfilled') setClient(profRes.value.data.client)
       if (resRes.status === 'fulfilled') setReservations(resRes.value.data.reservations || [])
+      if (facRes.status === 'fulfilled') setFactures(facRes.value.data.factures || [])
     } catch { window.location.href = '/client-portal/connexion' }
     finally { setLoading(false) }
   }
@@ -32,7 +48,7 @@ export default function ClientPortal() {
   const nav = [
     {id:'dashboard',label:'⊞ Tableau de bord'},{id:'reservations',label:'📋 Réservations'},
     {id:'sejours',label:'🏨 Mes séjours'},{id:'factures',label:'🧾 Factures'},
-    {id:'profil',label:'👤 Profil'},{id:'offres',label:'🎁 Offres'},
+    {id:'profil',label:'👤 Profil'},
   ]
 
   async function voirFolio(res) {
@@ -94,9 +110,9 @@ export default function ClientPortal() {
         {section === 'dashboard' && (
           <div>
             <h1 className="text-xl font-black text-white mb-2">Bonjour, {client?.prenom || 'Client'} 👋</h1>
-            <p className="text-sm text-gray-400 mb-6">Hôtel Royal Yaoundé · Espace client</p>
+            <p className="text-sm text-gray-400 mb-6">Espace client{hotelSlug ? ` · ${hotelSlug}` : ''}</p>
             <div className="grid grid-cols-4 gap-4 mb-6">
-              {[[client?.nombre_sejours||0,'Séjours','border-blue-500'],[client?.points_fidelite||0,'Points fidélité','border-amber-500'],[(reservations.filter(r=>r.statut==='confirmee').length),'À venir','border-emerald-500'],['Gold','Statut','border-purple-500']].map(([v,l,b]) => (
+              {[[client?.nombre_sejours||0,'Séjours','border-blue-500'],[client?.points_fidelite||0,'Points fidélité','border-amber-500'],[(reservations.filter(r=>r.statut==='confirmee').length),'À venir','border-emerald-500'],[(client?.niveau_fidelite||'bronze'),'Statut','border-purple-500']].map(([v,l,b]) => (
                 <div key={l} className={`bg-[#111827] border border-white/10 border-b-2 ${b} rounded-xl p-4 text-center`}>
                   <div className="text-xl font-black text-white mb-1">{v}</div>
                   <div className="text-[9.5px] text-gray-500 uppercase tracking-wider">{l}</div>
@@ -118,15 +134,22 @@ export default function ClientPortal() {
                 </div>
               )
             })()}
-            {/* Check-in en ligne */}
-            <div className="mt-4 bg-gradient-to-r from-blue-900/30 to-purple-900/20 border border-blue-500/20 rounded-2xl p-5 flex items-center gap-4">
-              <span className="text-4xl">📲</span>
-              <div className="flex-1">
-                <div className="text-sm font-bold text-white mb-1">Check-in en ligne disponible</div>
-                <div className="text-xs text-gray-400">Évitez la file d&apos;attente à la réception. Disponible 24h avant votre arrivée.</div>
+            {/* Check-in en ligne — réservations confirmées sans check-in effectué */}
+            {reservations.filter(r => r.statut === 'confirmee' && r.checkin_en_ligne !== 'complete').map(r => (
+              <div key={r.id} className="mt-4 bg-gradient-to-r from-blue-900/30 to-purple-900/20 border border-blue-500/20 rounded-2xl p-5 flex items-center gap-4">
+                <span className="text-4xl">📲</span>
+                <div className="flex-1">
+                  <div className="text-sm font-bold text-white mb-1">Check-in en ligne — {r.numero_reservation}</div>
+                  <div className="text-xs text-gray-400">Arrivée le {r.date_arrivee}. Complétez vos informations pour gagner du temps à la réception.</div>
+                </div>
+                <button onClick={() => ouvrirCheckin(r)} data-testid="bouton-checkin"
+                  className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition-colors">Check-in →</button>
               </div>
-              <button className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition-colors">Check-in →</button>
-            </div>
+            ))}
+            {reservations.some(r => r.checkin_en_ligne === 'complete' && r.statut === 'confirmee') && (
+              <div className="mt-4 text-xs text-emerald-400">✓ Check-in en ligne effectué — présentez-vous simplement à la réception.</div>
+            )}
+            {erreurCheckin && <div className="mt-3 text-xs text-red-400">{erreurCheckin}</div>}
           </div>
         )}
 
@@ -251,7 +274,7 @@ export default function ClientPortal() {
                           {folio.paiements.map(p => (
                             <div key={p.id} className="flex justify-between items-center py-1.5 border-b border-white/5 last:border-0">
                               <div className="text-xs text-gray-300">{p.type_paiement} · {new Date(p.cree_le).toLocaleDateString('fr-FR')}</div>
-                              <div className="text-xs font-bold text-emerald-400">−{parseFloat(p.montant||0).toLocaleString('fr-FR')}</div>
+                              <div className="text-xs font-bold text-emerald-400">{Number(p.montant) >= 0 ? '−' : '+'}{Math.abs(parseFloat(p.montant||0)).toLocaleString('fr-FR')}</div>
                             </div>
                           ))}
                         </div>
@@ -270,37 +293,26 @@ export default function ClientPortal() {
           </div>
         )}
 
-        {section === 'offres' && (
+        {section === 'factures' && (
           <div>
-            <h1 className="text-xl font-black text-white mb-5">🎁 Offres & Promotions</h1>
-            <div className="grid grid-cols-3 gap-4">
-              {[
-                {titre:'Escapade Week-end',remise:'15%',code:'WEEKEND15',exp:'30 Avr 2026',couleur:'#3B82F6'},
-                {titre:'Offre Romantique',  remise:'20%',code:'LOVE20',   exp:'14 Jun 2026',couleur:'#EC4899'},
-                {titre:'Tarif Corporate',  remise:'25%',code:'CORP25',   exp:'31 Déc 2026',couleur:'#10B981'},
-                {titre:'Réservation Anticipée',remise:'30%',code:'EARLY30',exp:'31 Déc 2026',couleur:'#8B5CF6'},
-                {titre:'Gold Member',      remise:'12%',code:'GOLD12',   exp:'31 Déc 2026',couleur:'#F59E0B'},
-                {titre:'Famille Heureuse', remise:'10%',code:'FAMILY10', exp:'31 Aoû 2026',couleur:'#06B6D4'},
-              ].map(o => (
-                <div key={o.code} className="bg-[#111827] border border-white/10 rounded-2xl overflow-hidden hover:border-white/20 transition-all">
-                  <div className="h-20 flex items-center justify-center relative" style={{background:`linear-gradient(135deg,${o.couleur}22,${o.couleur}44)`}}>
-                    <div className="absolute top-2 right-2 text-[10px] font-black text-white px-2 py-0.5 rounded-full" style={{background:o.couleur}}>{o.remise} OFF</div>
-                    <div className="text-3xl">🎁</div>
-                  </div>
-                  <div className="p-4">
-                    <div className="font-bold text-white text-sm mb-2">{o.titre}</div>
-                    <div className="flex justify-between items-center mb-3">
-                      <div className="font-mono text-xs font-bold border border-dashed border-white/20 px-2 py-1 rounded text-gray-300">{o.code}</div>
-                      <div className="text-[9.5px] text-gray-500">Exp. {o.exp}</div>
-                    </div>
-                    <button onClick={() => { sessionStorage.setItem('bk_promo',o.code); window.location.href='/booking' }}
-                      className="w-full text-xs font-bold py-2 rounded-lg text-white transition-colors" style={{background:o.couleur}}>
-                      Utiliser cette offre →
-                    </button>
+            <h1 className="text-xl font-black text-white mb-5">🧾 Mes factures</h1>
+            {factures.length ? factures.map(f => (
+              <div key={f.id} className="bg-[#111827] border border-white/10 rounded-2xl p-5 mb-3 flex items-center gap-4">
+                <div className="text-3xl">🧾</div>
+                <div className="flex-1">
+                  <div className="font-bold text-white">{f.numero_facture}</div>
+                  <div className="text-xs text-gray-400 mt-0.5">Séjour {f.numero_reservation} · {f.date_arrivee} → {f.date_depart}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-white font-black">{Number(f.montant_ttc||0).toLocaleString('fr-FR')} {f.devise||'XAF'}</div>
+                  <div className={`text-[10px] mt-0.5 ${Number(f.montant_du) > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                    {Number(f.montant_du) > 0 ? `Reste dû ${Number(f.montant_du).toLocaleString('fr-FR')}` : 'Réglée'}
                   </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            )) : (
+              <div className="text-center py-12 text-gray-500"><div className="text-4xl mb-4">🧾</div><div className="font-bold">Aucune facture</div></div>
+            )}
           </div>
         )}
 

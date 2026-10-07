@@ -1,9 +1,20 @@
 'use client'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
+import { useEffect, useState } from 'react'
 import { useAuthStore } from '@/lib/utils'
-import { authAPI } from '@/lib/api'
+import { authAPI, hotelsAPI } from '@/lib/api'
 import toast from 'react-hot-toast'
+
+// Module requis par chemin de navigation.
+// Le backend reste la barrière de sécurité — cette map contrôle l'affichage uniquement.
+const MODULE_REQUIS = {
+  '/ai':         'ia_cockpit',
+  '/restaurant': 'restaurant_kds',
+  '/cuisine':    'restaurant_kds',
+  '/analytics':  'analytics_avances',
+  '/reporting':  'analytics_avances',
+}
 
 const MENUS_PAR_ROLE = {
   super_admin: [
@@ -19,21 +30,34 @@ const MENUS_PAR_ROLE = {
   ],
   manager: [
     { groupe: 'Opérations', items: [
-      { key: '/dashboard',    icone: '⊞', label: 'Tableau de bord' },
+      { key: '/dashboard',       icone: '⊞', label: 'Tableau de bord' },
       { key: '/reservations',    icone: '📋', label: 'Réservations', badge: 'new' },
+      { key: '/arrhes',          icone: '🔒', label: 'Arrhes & Garanties' },
       { key: '/messages-portail',icone: '📨', label: 'Messages portail' },
-      { key: '/timeline',     icone: '▦', label: 'Planning' },
-      { key: '/chambres',     icone: '🛏', label: 'Chambres' },
-      { key: '/menage',       icone: '🧹', label: 'Ménage' },
-      { key: '/restaurant',   icone: '🍽', label: 'Restaurant' },
-      { key: '/cuisine',      icone: '🔥', label: 'Cuisine KDS' },
-      { key: '/maintenance',  icone: '🔧', label: 'Maintenance' },
+      { key: '/timeline',        icone: '▦', label: 'Planning' },
+      { key: '/chambres',        icone: '🛏', label: 'Chambres' },
+      // QA-01 : page autorisée au manager mais inaccessible depuis l'interface — or une chambre exige un type
+      { key: '/types-chambre',   icone: '🏷', label: 'Types de chambre' },
+      { key: '/evenements',      icone: '🎪', label: 'Événements' },
+      { key: '/menage',          icone: '🧹', label: 'Ménage' },
+      { key: '/restaurant',      icone: '🍽', label: 'Restaurant' },
+      { key: '/cuisine',         icone: '🔥', label: 'Cuisine KDS' },
+      { key: '/maintenance',     icone: '🔧', label: 'Maintenance' },
     ]},
-    { groupe: 'Business', items: [
-      { key: '/clients',    icone: '👥', label: 'Clients' },
-      { key: '/facturation',icone: '💳', label: 'Facturation' },
-      { key: '/analytics',  icone: '📊', label: 'Analytique' },
-      { key: '/reporting',  icone: '📰', label: 'Reporting' },
+    { groupe: 'Finance & Clients', items: [
+      { key: '/clients',     icone: '👥', label: 'Clients' },
+      { key: '/fidelite',    icone: '⭐', label: 'Fidélité' },
+      { key: '/caisse',      icone: '🏧', label: 'Caisse' },
+      { key: '/charges',     icone: '📑', label: 'Charges' },
+      { key: '/facturation', icone: '💳', label: 'Facturation' },
+      { key: '/analytics',   icone: '📊', label: 'Analytique' },
+      { key: '/reporting',   icone: '📰', label: 'Reporting' },
+    ]},
+    { groupe: 'F&B & Stocks', items: [
+      { key: '/catalogue',    icone: '📖', label: 'Catalogue F&B' },
+      { key: '/stock',        icone: '📦', label: 'Stocks' },
+      { key: '/achats',       icone: '🛒', label: 'Bons de commande' },
+      { key: '/fournisseurs', icone: '🚚', label: 'Fournisseurs' },
     ]},
     { groupe: 'IA & Config', items: [
       { key: '/ai',       icone: '🤖', label: 'Ouwalou AI' },
@@ -43,11 +67,13 @@ const MENUS_PAR_ROLE = {
   ],
   reception: [
     { groupe: 'Réception', items: [
-      { key: '/dashboard',    icone: '⊞', label: 'Tableau de bord' },
+      { key: '/dashboard',       icone: '⊞', label: 'Tableau de bord' },
       { key: '/reservations',    icone: '📋', label: 'Réservations' },
+      { key: '/arrhes',          icone: '🔒', label: 'Arrhes & Garanties' },
       { key: '/timeline',        icone: '▦', label: 'Planning' },
       { key: '/clients',         icone: '👥', label: 'Clients' },
       { key: '/messages-portail',icone: '📨', label: 'Messages portail' },
+      { key: '/caisse',          icone: '🏧', label: 'Caisse' },
     ]}
   ],
   housekeeping: [
@@ -60,10 +86,14 @@ const MENUS_PAR_ROLE = {
     { groupe: 'Restaurant & Bar', items: [
       { key: '/restaurant', icone: '🍽', label: 'POS' },
       { key: '/cuisine',    icone: '🔥', label: 'Cuisine KDS' },
+      { key: '/catalogue',  icone: '📖', label: 'Catalogue F&B' },
+      { key: '/stock',      icone: '📦', label: 'Stocks' },
     ]}
   ],
   comptabilite: [
     { groupe: 'Finance', items: [
+      { key: '/caisse',      icone: '🏧', label: 'Caisse' },
+      { key: '/charges',     icone: '📑', label: 'Charges' },
       { key: '/facturation', icone: '💳', label: 'Facturation' },
       { key: '/analytics',   icone: '📊', label: 'Analytique' },
     ]}
@@ -86,11 +116,29 @@ const ROLE_COULEURS = {
   technicien:   'from-slate-600 to-gray-600',
 }
 
-export default function Sidebar() {
+// QA-01 : AppLayout pilote un tiroir (☰, fond assombri, fermeture au clic) mais la barre latérale
+// ignorait `open` — toujours affichée en position fixe par-dessus les 240 px gauches de chaque écran.
+export default function Sidebar({ open = false, onClose } = {}) {
   const pathname  = usePathname()
   const router    = useRouter()
   const { user, hotel, logout } = useAuthStore()
   const menus = MENUS_PAR_ROLE[user?.role] || MENUS_PAR_ROLE.manager
+
+  const [modulesDisponibles, setModulesDisponibles] = useState(null)
+
+  useEffect(() => {
+    if (!user || user.scope === 'platform') return
+    hotelsAPI.modules()
+      .then(res => setModulesDisponibles(res.data?.modules || null))
+      .catch(() => setModulesDisponibles(null))
+  }, [user?.id])
+
+  function estItemVisible(itemKey) {
+    const moduleRequis = MODULE_REQUIS[itemKey]
+    if (!moduleRequis) return true
+    if (!modulesDisponibles) return true  // pas encore chargé → afficher par défaut
+    return modulesDisponibles[moduleRequis] === true
+  }
 
   async function handleLogout() {
     try { await authAPI.deconnexion() } catch {}
@@ -103,7 +151,7 @@ export default function Sidebar() {
   const gradient = ROLE_COULEURS[user?.role] || 'from-blue-600 to-purple-600'
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar transition-transform duration-200 ${open ? 'translate-x-0' : '-translate-x-full'}`} aria-hidden={!open}>
       {/* Logo */}
       <div className="flex items-center gap-2.5 px-4 py-3.5 border-b border-[var(--border-0)] flex-shrink-0">
         <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-white text-xs font-black flex-shrink-0 shadow-md shadow-blue-500/25">7</div>
@@ -124,14 +172,17 @@ export default function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-2 py-2 space-y-4">
-        {menus.map(groupe => (
+        {menus.map(groupe => {
+          const itemsVisibles = groupe.items.filter(item => estItemVisible(item.key))
+          if (itemsVisibles.length === 0) return null
+          return (
           <div key={groupe.groupe}>
             <div className="text-[8.5px] font-bold uppercase tracking-[0.1em] text-[var(--text-4)] px-2 mb-1.5">{groupe.groupe}</div>
             <div className="space-y-0.5">
-              {groupe.items.map(item => {
+              {itemsVisibles.map(item => {
                 const active = pathname === item.key || pathname.startsWith(item.key + '/')
                 return (
-                  <Link key={item.key} href={item.key}
+                  <Link key={item.key} href={item.key} onClick={() => onClose && onClose()}
                     className={`sidebar-nav-item ${active ? 'active' : ''}`}>
                     <span className="text-sm opacity-75 w-4 text-center flex-shrink-0">{item.icone}</span>
                     <span className="flex-1">{item.label}</span>
@@ -143,7 +194,8 @@ export default function Sidebar() {
               })}
             </div>
           </div>
-        ))}
+          )
+        })}
       </nav>
 
       {/* Footer utilisateur */}

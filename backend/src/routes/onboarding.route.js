@@ -35,7 +35,9 @@ async function slugUnique(db, tenantId, nom) {
   let   slug  = base
   let   n     = 2
   while (true) {
-    const exists = await db('hotels').where({ tenant_id: tenantId, slug }).first()
+    // HELICONIA-READY-01 — unicité GLOBALE : le booking public et le portail client
+    // résolvent l'hôtel par slug seul, tous tenants confondus (collision = mauvais hôtel servi).
+    const exists = await db('hotels').where({ slug }).first()
     if (!exists) return slug
     slug = `${base}-${n++}`
     if (n > 20) return `${base}-${randomBytes(3).toString('hex')}`
@@ -166,6 +168,14 @@ module.exports = async function onboardingRoutes(fastify) {
         fuseau_horaire: fuseau_horaire.trim(),
         langue:         'fr',
       })
+
+      // 2b. QA-01 — Fiscalité initiale cohérente : parametres_hotel reçoit les défauts de la base
+      // (TVA active…) affichés dans Réglages, mais la table `taxes` (seule source de calcul,
+      // PMS-02) restait vide → l'écran annonçait une TVA qui n'était pas appliquée.
+      // On aligne `taxes` sur ces défauts dès la création (même service que Réglages).
+      const paramsInit = await trx('parametres_hotel').where({ hotel_id: hotelId })
+        .select('tva_active', 'tva_taux', 'taxe_sejour_active', 'taxe_sejour_montant').first()
+      await require('../services/fiscalite.service').synchroniserDepuisParametres(trx, hotelId, paramsInit)
 
       // 3. Assigner le manager — idempotent : WHERE hotel_id IS NULL
       const rowsAffected = await trx('utilisateurs')

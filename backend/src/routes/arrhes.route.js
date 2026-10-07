@@ -1,5 +1,8 @@
 'use strict'
 
+const comptabilite = require('../services/comptabilite.bridge')
+const folioRegles  = require('../services/folio.regles')
+
 // Config arrhes par défaut si non configurée
 const CONFIG_DEFAUT = {
   actives: false,
@@ -212,6 +215,24 @@ module.exports = async function arrhesRoutes(fastify) {
     reply.status(201).send({ message: 'Garantie créée', garantie })
   })
 
+  // ── Ligne folio 'arrhes' (LOT-PMS-02) ─────────────────────────────────────
+  // Le folio porte les arrhes comme un règlement : crédit à l'encaissement, débit au
+  // remboursement ou à l'acquisition. Même transaction que la garantie : jamais de
+  // garantie encaissée sans trace au folio (l'ancien try/catch avalait l'échec d'enum).
+  async function ligneArrhes(trx, g, { sens, montant, description, nature, mode, userId }) {
+    const folio = await trx('folios').where({ reservation_id: g.reservation_id, hotel_id: g.hotel_id }).forUpdate().first()
+    if (!folio) throw Object.assign(new Error('Folio de la réservation introuvable'), { statusCode: 409, code: 'FOLIO_INTROUVABLE' })
+    if (folio.statut === 'cloture') throw Object.assign(new Error('Folio clôturé — arrhes non imputables'), { statusCode: 409, code: 'FOLIO_CLOTURE' })
+    await trx('lignes_folio').insert({
+      folio_id: folio.id, hotel_id: g.hotel_id, type_ligne: 'arrhes', sens,
+      prix_unitaire: montant, montant_total: montant, devise: g.devise,
+      description, reference_id: g.id, reference_type: 'garantie', source_module: 'arrhes',
+      cree_par: userId, cree_par_type: 'staff',
+      metadata: JSON.stringify({ nature, mode_paiement: mode || null }),
+    })
+    return folio
+  }
+
   // ── PUT /arrhes/:id/confirmer — enregistrer un paiement reçu ───────────────
   fastify.put('/:id/confirmer', { preHandler: preWrite }, async (req, reply) => {
     const { montant_recu, mode_paiement, reference_paiement, notes } = req.body || {}
@@ -219,96 +240,91 @@ module.exports = async function arrhesRoutes(fastify) {
     if (!montant_recu || montant_recu <= 0)
       return reply.status(400).send({ erreur: 'montant_recu requis et > 0' })
 
-    const g = await fastify.db('garanties_reservation')
-      .where({ id: req.params.id, hotel_id: req.hotelId }).first()
-    if (!g) return reply.status(404).send({ erreur: 'Garantie introuvable' })
-    if (['acquise', 'annulee'].includes(g.statut))
-      return reply.status(400).send({ erreur: `Garantie ${g.statut} — modification impossible` })
+    const resultat = await fastify.db.transaction(async (trx) => {
+      const g = await trx('garanties_reservation').where({ id: req.params.id, hotel_id: req.hotelId }).forUpdate().first()
+      if (!g) return { code: 404, body: { erreur: 'Garantie introuvable' } }
+      if (['acquise', 'annulee', 'remboursee'].includes(g.statut))
+        return { code: 400, body: { erreur: `Garantie ${g.statut} — modification impossible` } }
 
-    const totalRecu  = Number(g.montant_recu) + Number(montant_recu)
-    const nouveauStatut = totalRecu >= g.montant_demande ? 'complete' : 'partielle'
+      const totalRecu     = Number(g.montant_recu) + Number(montant_recu)
+      const nouveauStatut = totalRecu >= Number(g.montant_demande) ? 'complete' : 'partielle'
+      const mode          = mode_paiement || g.mode_paiement
 
-    const [updated] = await fastify.db('garanties_reservation')
-      .where({ id: req.params.id, hotel_id: req.hotelId })
-      .update({
-        montant_recu:      totalRecu,
-        statut:            nouveauStatut,
-        mode_paiement:     mode_paiement || g.mode_paiement,
-        reference_paiement: reference_paiement || g.reference_paiement,
-        notes:             notes || g.notes,
-        traite_par:        req.user.id,
-        confirme_le:       nouveauStatut === 'complete' ? fastify.db.fn.now() : g.confirme_le,
-        mis_a_jour_le:     fastify.db.fn.now(),
+      const [updated] = await trx('garanties_reservation')
+        .where({ id: g.id, hotel_id: req.hotelId })
+        .update({
+          montant_recu:       totalRecu,
+          statut:             nouveauStatut,
+          mode_paiement:      mode,
+          reference_paiement: reference_paiement || g.reference_paiement,
+          notes:              notes || g.notes,
+          traite_par:         req.user.id,
+          confirme_le:        nouveauStatut === 'complete' ? trx.fn.now() : g.confirme_le,
+          mis_a_jour_le:      trx.fn.now(),
+        })
+        .returning('*')
+
+      // Chaque encaissement (partiel ou complet) est crédité au folio pour son montant
+      await ligneArrhes(trx, g, {
+        sens: 'credit', montant: Number(montant_recu), nature: 'encaissement', mode, userId: req.user.id,
+        description: `Arrhes reçues (${mode || 'n/a'}${reference_paiement ? ' — réf. ' + reference_paiement : ''})`,
       })
-      .returning('*')
+      return { code: 200, garantie: updated, totalRecu, nouveauStatut }
+    })
+    if (!resultat.garantie) return reply.status(resultat.code).send(resultat.body)
 
-    // Si garantie complète, enregistrer dans le folio comme crédit
-    if (nouveauStatut === 'complete') {
-      try {
-        const folio = await fastify.db('folios')
-          .where({ reservation_id: g.reservation_id, hotel_id: req.hotelId, statut: 'ouvert' })
-          .first()
-        if (folio) {
-          await fastify.db('lignes_folio').insert({
-            folio_id:       folio.id,
-            hotel_id:       req.hotelId,
-            type_ligne:     'arrhes',
-            sens:           'credit',
-            prix_unitaire:  totalRecu,
-            montant_total:  totalRecu,
-            devise:         g.devise,
-            description:    `Arrhes reçues (${g.taux_applique}% — réf. ${reference_paiement || 'N/A'})`,
-            reference_id:   updated.id,
-            reference_type: 'garantie',
-            source_module:  'arrhes',
-            cree_par:       req.user.id,
-            cree_par_type:  'staff',
-          })
-        }
-      } catch (err) {
-        req.log.warn({ err: err.message }, 'Arrhes confirmées mais erreur crédit folio')
-      }
-    }
-
-    reply.send({ message: `Garantie ${nouveauStatut === 'complete' ? 'complète' : 'partielle'} — ${totalRecu.toLocaleString('fr-FR')} reçus`, garantie: updated })
+    await comptabilite.publier(fastify.db, { source: 'garantie', id: resultat.garantie.id, hotelId: req.hotelId, userId: req.user.id, log: req.log })
+    reply.send({ message: `Garantie ${resultat.nouveauStatut === 'complete' ? 'complète' : 'partielle'} — ${resultat.totalRecu.toLocaleString('fr-FR')} reçus`, garantie: resultat.garantie })
   })
 
   // ── PUT /arrhes/:id/rembourser ─────────────────────────────────────────────
+  // Remboursement selon la politique ; la part non remboursée est acquise à l'hôtel.
   fastify.put('/:id/rembourser', { preHandler: preAdmin }, async (req, reply) => {
     const { motif } = req.body || {}
 
-    const g = await fastify.db('garanties_reservation')
-      .where({ id: req.params.id, hotel_id: req.hotelId }).first()
-    if (!g) return reply.status(404).send({ erreur: 'Garantie introuvable' })
-    if (!['complete', 'partielle'].includes(g.statut))
-      return reply.status(400).send({ erreur: 'Seules les garanties reçues peuvent être remboursées' })
+    const resultat = await fastify.db.transaction(async (trx) => {
+      const g = await trx('garanties_reservation').where({ id: req.params.id, hotel_id: req.hotelId }).forUpdate().first()
+      if (!g) return { code: 404, body: { erreur: 'Garantie introuvable' } }
+      if (!['complete', 'partielle'].includes(g.statut))
+        return { code: 400, body: { erreur: 'Seules les garanties reçues peuvent être remboursées' } }
 
-    // Récupérer la date d'arrivée pour calcul politique
-    const res = await fastify.db('reservations')
-      .where({ id: g.reservation_id }).select('date_arrivee').first()
-    const config     = await getConfig(req.hotelId)
-    const { pct, joursAvant } = calculerRemboursement(config.politique_annulation || [], res.date_arrivee)
-    const montantRembourse    = Math.round((g.montant_recu * pct) / 100)
+      const res = await trx('reservations').where({ id: g.reservation_id, hotel_id: req.hotelId }).select('date_arrivee').first()
+      const config = await getConfig(req.hotelId)
+      const { pct, joursAvant } = calculerRemboursement(config.politique_annulation || [], res.date_arrivee)
+      const montantRembourse    = Math.round((Number(g.montant_recu) * pct) / 100)
+      const montantConserve     = Number(g.montant_recu) - montantRembourse
 
-    const [updated] = await fastify.db('garanties_reservation')
-      .where({ id: req.params.id, hotel_id: req.hotelId })
-      .update({
-        statut:              'remboursee',
-        montant_rembourse:   montantRembourse,
-        pct_remboursement:   pct,
-        motif_remboursement: motif || null,
-        traite_par:          req.user.id,
-        rembourse_le:        fastify.db.fn.now(),
-        mis_a_jour_le:       fastify.db.fn.now(),
-      })
-      .returning('*')
+      const [updated] = await trx('garanties_reservation')
+        .where({ id: g.id, hotel_id: req.hotelId })
+        .update({
+          statut:              'remboursee',
+          montant_rembourse:   montantRembourse,
+          pct_remboursement:   pct,
+          motif_remboursement: motif || null,
+          traite_par:          req.user.id,
+          rembourse_le:        trx.fn.now(),
+          mis_a_jour_le:       trx.fn.now(),
+        })
+        .returning('*')
 
+      let folio = null
+      if (montantRembourse > 0) folio = await ligneArrhes(trx, g, { sens: 'debit', montant: montantRembourse, nature: 'remboursement',
+        mode: g.mode_paiement, userId: req.user.id, description: `Remboursement arrhes (${pct}%)` })
+      if (montantConserve > 0) folio = await ligneArrhes(trx, g, { sens: 'debit', montant: montantConserve, nature: 'acquisition',
+        mode: null, userId: req.user.id, description: "Arrhes conservées par l'hôtel (politique d'annulation)" })
+      if (folio) await folioRegles.recalculerStatut(trx, folio.id, req.hotelId, req.user.id)
+
+      return { code: 200, garantie: updated, pct, joursAvant, montantRembourse }
+    })
+    if (!resultat.garantie) return reply.status(resultat.code).send(resultat.body)
+
+    await comptabilite.publier(fastify.db, { source: 'garantie', id: resultat.garantie.id, hotelId: req.hotelId, userId: req.user.id, log: req.log })
     reply.send({
-      message: `Remboursement ${pct}% (${joursAvant}j avant arrivée) — ${montantRembourse.toLocaleString('fr-FR')} à rembourser`,
-      garantie: updated,
-      pct_remboursement: pct,
-      montant_rembourse: montantRembourse,
-      jours_avant_arrivee: joursAvant,
+      message: `Remboursement ${resultat.pct}% (${resultat.joursAvant}j avant arrivée) — ${resultat.montantRembourse.toLocaleString('fr-FR')} à rembourser`,
+      garantie: resultat.garantie,
+      pct_remboursement: resultat.pct,
+      montant_rembourse: resultat.montantRembourse,
+      jours_avant_arrivee: resultat.joursAvant,
     })
   })
 
@@ -316,24 +332,34 @@ module.exports = async function arrhesRoutes(fastify) {
   fastify.put('/:id/acquerir', { preHandler: preAdmin }, async (req, reply) => {
     const { motif } = req.body || {}
 
-    const g = await fastify.db('garanties_reservation')
-      .where({ id: req.params.id, hotel_id: req.hotelId }).first()
-    if (!g) return reply.status(404).send({ erreur: 'Garantie introuvable' })
-    if (!['complete', 'partielle', 'en_attente'].includes(g.statut))
-      return reply.status(400).send({ erreur: `Statut ${g.statut} ne permet pas l'acquisition` })
+    const resultat = await fastify.db.transaction(async (trx) => {
+      const g = await trx('garanties_reservation').where({ id: req.params.id, hotel_id: req.hotelId }).forUpdate().first()
+      if (!g) return { code: 404, body: { erreur: 'Garantie introuvable' } }
+      if (!['complete', 'partielle', 'en_attente'].includes(g.statut))
+        return { code: 400, body: { erreur: `Statut ${g.statut} ne permet pas l'acquisition` } }
 
-    const [updated] = await fastify.db('garanties_reservation')
-      .where({ id: req.params.id, hotel_id: req.hotelId })
-      .update({
-        statut:              'acquise',
-        pct_remboursement:   0,
-        motif_remboursement: motif || 'Annulation tardive — arrhes acquises',
-        traite_par:          req.user.id,
-        mis_a_jour_le:       fastify.db.fn.now(),
-      })
-      .returning('*')
+      const [updated] = await trx('garanties_reservation')
+        .where({ id: g.id, hotel_id: req.hotelId })
+        .update({
+          statut:              'acquise',
+          pct_remboursement:   0,
+          motif_remboursement: motif || 'Annulation tardive — arrhes acquises',
+          traite_par:          req.user.id,
+          mis_a_jour_le:       trx.fn.now(),
+        })
+        .returning('*')
 
-    reply.send({ message: "Arrhes marquées comme acquises par l'hôtel", garantie: updated })
+      if (Number(g.montant_recu) > 0) {
+        const folio = await ligneArrhes(trx, g, { sens: 'debit', montant: Number(g.montant_recu), nature: 'acquisition',
+          mode: null, userId: req.user.id, description: "Arrhes acquises par l'hôtel" })
+        await folioRegles.recalculerStatut(trx, folio.id, req.hotelId, req.user.id)
+      }
+      return { code: 200, garantie: updated }
+    })
+    if (!resultat.garantie) return reply.status(resultat.code).send(resultat.body)
+
+    await comptabilite.publier(fastify.db, { source: 'garantie', id: resultat.garantie.id, hotelId: req.hotelId, userId: req.user.id, log: req.log })
+    reply.send({ message: "Arrhes marquées comme acquises par l'hôtel", garantie: resultat.garantie })
   })
 
   // ── GET /arrhes/:id — détail d'une garantie ────────────────────────────────

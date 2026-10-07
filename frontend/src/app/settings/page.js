@@ -18,8 +18,12 @@ export default function SettingsPage() {
   const [uploadingImg, setUploadingImg] = useState(false)
   const [onglet,       setOnglet]       = useState('general')
   const fileInputRef = useRef(null)
+  const logoInputRef = useRef(null)
+  const [logoEnCours, setLogoEnCours] = useState(false)
 
-  useEffect(() => { charger() }, [])
+  // QA-01 : l'hôtel du store n'est pas encore hydraté au premier rendu → charger() ne faisait rien
+  // et Réglages restait vide. On (re)charge dès que l'hôtel est connu.
+  useEffect(() => { if (hotel?.id) charger() }, [hotel?.id])
 
   async function charger() {
     try {
@@ -69,6 +73,34 @@ export default function SettingsPage() {
       setUploadingImg(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
+  }
+
+  // HELICONIA-READY-01 — logo de l'hôtel, repris sur les factures
+  async function changerLogo(e) {
+    const fichier = e.target.files?.[0]
+    if (!fichier || !hotel?.id) return
+    if (fichier.size > 2 * 1024 * 1024) { toast.error('Logo trop lourd (2 Mo maximum)'); return }
+    try {
+      setLogoEnCours(true)
+      const res = await hotelsAPI.uploadLogo(hotel.id, fichier)
+      setParams(p => ({ ...p, logo_url: res.data.logo_url }))
+      toast.success('Logo enregistré — il figure désormais sur vos factures')
+    } catch (err) {
+      toast.error(err?.response?.data?.erreur || 'Erreur envoi du logo')
+    } finally {
+      setLogoEnCours(false)
+      if (logoInputRef.current) logoInputRef.current.value = ''
+    }
+  }
+
+  async function retirerLogo() {
+    try {
+      setLogoEnCours(true)
+      await hotelsAPI.supprimerLogo(hotel.id)
+      setParams(p => ({ ...p, logo_url: null }))
+      toast.success('Logo supprimé')
+    } catch { toast.error('Suppression impossible') }
+    finally { setLogoEnCours(false) }
   }
 
   async function sauvegarderTaxes(e) {
@@ -175,6 +207,32 @@ export default function SettingsPage() {
                 <label className="form-label">Pays</label>
                 <input className="input" value={params.pays || ''} onChange={e => setParams({...params, pays:e.target.value})} />
               </div>
+              <div className="col-span-2">
+                <label className="form-label">Logo de l'hôtel — affiché sur les factures</label>
+                <div className="mt-1 flex items-center gap-4">
+                  <div className="w-40 h-20 rounded-xl border border-[var(--border-1)] bg-white flex items-center justify-center overflow-hidden">
+                    {params.logo_url
+                      ? <img src={`${API_ORIGIN}${params.logo_url}`} alt="Logo de l'hôtel" className="max-w-full max-h-full object-contain" />
+                      : <span className="text-[10px] text-gray-400">Aucun logo</span>}
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex gap-2">
+                      <button type="button" disabled={logoEnCours} onClick={() => logoInputRef.current?.click()}
+                        className="btn btn-primary btn-sm text-xs disabled:opacity-50">
+                        {logoEnCours ? 'Envoi…' : params.logo_url ? 'Remplacer' : 'Ajouter un logo'}
+                      </button>
+                      {params.logo_url && (
+                        <button type="button" disabled={logoEnCours} onClick={retirerLogo}
+                          className="btn btn-ghost btn-sm text-xs disabled:opacity-50">Supprimer</button>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-[var(--text-3)]">PNG ou JPEG, 2 Mo maximum. Fond transparent conseillé.</span>
+                  </div>
+                  <input ref={logoInputRef} type="file" accept="image/png,image/jpeg" className="hidden"
+                    onChange={changerLogo} disabled={logoEnCours} />
+                </div>
+              </div>
+
               <div className="col-span-2">
                 <label className="form-label">Photo d'ambiance — fond d'écran de l'interface</label>
 

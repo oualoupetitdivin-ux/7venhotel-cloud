@@ -1,5 +1,7 @@
 'use strict'
 
+const comptabilite = require('../services/comptabilite.bridge')
+
 const { createFacturationRepository } = require('../repositories/facturation.repository')
 
 module.exports = async function restaurantRoutes(fastify) {
@@ -109,6 +111,20 @@ module.exports = async function restaurantRoutes(fastify) {
     const nouveauStatut = req.body.statut
     const hotelId       = req.hotelId
 
+    // LOT-PMS-02 — Cycle : commande → préparation → servie → COMMIT → réponse → événement comptable.
+    // Auparavant reply.send() partait DANS la transaction (succès annoncé avant commit) et une réponse
+    // d'erreur (ex. commande annulée) laissait quand même commiter le passage en 'servie'.
+    const out = { code: 200, body: null }
+    const rep = {
+      status(code) { out.code = code; return rep },
+      send(body) {
+        out.body = body
+        if (out.code >= 400) throw Object.assign(new Error('REPONSE_ERREUR'), { reponseAnticipee: true })  // → rollback
+        return rep
+      },
+    }
+
+    try {
     await fastify.db.transaction(async (trx) => {
 
       // Verrou pessimiste — sérialise les doubles "servie" concurrents
@@ -118,7 +134,16 @@ module.exports = async function restaurantRoutes(fastify) {
         .first()
 
       if (!commandeAvant)
-        return reply.status(404).send({ erreur: 'Commande introuvable' })
+        return rep.status(404).send({ erreur: 'Commande introuvable' })
+
+      // HELICONIA-READY-01 — une commande servie est déjà portée au folio / encaissée :
+      // l'annuler laissait les lignes débitées (client facturé d'une commande « annulée »).
+      // Contestation → correction de folio (/facturation/correction), traçable.
+      if (commandeAvant.statut === 'servie' && nouveauStatut !== 'servie')
+        return rep.status(409).send({
+          erreur: 'Commande déjà servie et facturée — utiliser une correction de folio',
+          code:   'COMMANDE_DEJA_SERVIE',
+        })
 
       const updates = { statut: nouveauStatut }
       if (nouveauStatut === 'en_preparation') updates.heure_preparation = trx.fn.now()
@@ -165,7 +190,7 @@ module.exports = async function restaurantRoutes(fastify) {
 
         // Commande annulée — aucune écriture financière
         if (commandeAvant.statut === 'annulee')
-          return reply.status(409).send({
+          return rep.status(409).send({
             erreur: 'Commande annulée — facturation impossible',
             code:   'COMMANDE_ANNULEE',
           })
@@ -178,7 +203,36 @@ module.exports = async function restaurantRoutes(fastify) {
         if (montant <= 0) {
           req.log.warn({ commande_id: commandeAvant.id, hotel_id: hotelId },
             'Commande servie montant nul — aucune écriture financière')
-          return reply.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
+          return rep.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
+        }
+
+        // LOT-PMS-02 — TVA / taxes restaurant : même modèle que l'hébergement (source normative = table
+        // taxes : actives, s_applique_a restaurant|tout, non incluses au prix). Montant HT = lignes de
+        // commande ; chaque taxe devient une ligne 'taxe' du folio. Auparavant : aucune taxe appliquée.
+        const taxesActives = await trx('taxes')
+          .where({ hotel_id: hotelId, active: true, incluse_prix: false })
+          .whereIn('s_applique_a', ['restaurant', 'tout'])
+          .orderBy('ordre')
+        const detailTaxes = taxesActives.map(t => ({
+          code: t.code, nom: t.nom,
+          montant: Math.round((t.type_taxe === 'pourcentage' ? montant * Number(t.valeur) / 100 : Number(t.valeur)) * 100) / 100,
+        })).filter(t => t.montant > 0)
+        const totalTaxes = Math.round(detailTaxes.reduce((x, t) => x + t.montant, 0) * 100) / 100
+        const montantTTC = Math.round((montant + totalTaxes) * 100) / 100
+        await trx('commandes_restaurant').where({ id: commandeAvant.id, hotel_id: hotelId })
+          .update({ sous_total: montant, taxes: totalTaxes, total: montantTTC })
+
+        const insererTaxesFolio = async (folioId) => {
+          for (const t of detailTaxes) {
+            await trx('lignes_folio').insert({
+              folio_id: folioId, hotel_id: hotelId, type_ligne: 'taxe', sens: 'debit',
+              prix_unitaire: t.montant, montant_total: t.montant, devise: commandeAvant.devise || 'XAF',
+              description: `${t.nom} — ${commandeAvant.numero_commande}`,
+              reference_id: commandeAvant.id, reference_type: 'commande_restaurant', source_module: 'restaurant',
+              cree_par: req.user.id || null, cree_par_type: 'staff',
+              metadata: JSON.stringify({ code: t.code, numero_commande: commandeAvant.numero_commande }),
+            })
+          }
         }
 
         const reservationId  = commandeAvant.reservation_id
@@ -193,7 +247,7 @@ module.exports = async function restaurantRoutes(fastify) {
           const MOYENS_VALIDES = ['carte', 'especes', 'virement', 'mobile_money']
           const moyenExt = commandeAvant.mode_paiement
           if (!moyenExt || !MOYENS_VALIDES.includes(moyenExt))
-            return reply.status(400).send({
+            return rep.status(400).send({
               erreur: `mode_paiement requis et valide pour client externe — reçu : "${moyenExt || 'absent'}"`,
               code:   'MODE_PAIEMENT_INVALIDE',
               valeurs_acceptees: MOYENS_VALIDES,
@@ -206,10 +260,11 @@ module.exports = async function restaurantRoutes(fastify) {
             folio_id:        null,
             type_paiement:   moyenExt,
             statut:          'valide',
-            montant:         montant,
+            montant:         montantTTC,
             devise:          devise,
             notes:           `Commande restaurant ${commandeAvant.numero_commande} — client externe`,
-            methode_detail:  JSON.stringify({ commande_id: commandeAvant.id, type_client: commandeAvant.type_client }),
+            // LOT-PMS-02 — ventilation fiscale conservée (vente directe sans folio : seule trace du détail)
+            methode_detail:  JSON.stringify({ commande_id: commandeAvant.id, type_client: commandeAvant.type_client, montant_ht: montant, taxes: detailTaxes }),
             traite_par:      req.user.id || null,
             traite_le:       trx.fn.now(),
             idempotency_key: `resto-ext-${commandeAvant.id}`,
@@ -234,7 +289,7 @@ module.exports = async function restaurantRoutes(fastify) {
 
           req.log.info({ commande_id: commandeAvant.id, hotel_id: hotelId, montant },
             'Client externe — paiement enregistré, pas de folio')
-          return reply.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
+          return rep.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
         }
 
         // ── CLIENT HÔTEL — Idempotence avant toute écriture folio ──────────
@@ -245,7 +300,7 @@ module.exports = async function restaurantRoutes(fastify) {
           .first()
 
         if (ligneExistante)
-          return reply.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
+          return rep.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
 
         const folio = await trx('folios')
           .where({ reservation_id: reservationId, hotel_id: hotelId, statut: 'ouvert' })
@@ -258,7 +313,7 @@ module.exports = async function restaurantRoutes(fastify) {
             hotel_id:       hotelId,
             reservation_id: reservationId,
           }, 'Commande servie sans folio ouvert — réconciliation requise')
-          return reply.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
+          return rep.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
         }
 
         // ── CAS 1 — CLIENT HÔTEL + PAIEMENT DIFFÉRÉ (chambre) ──────────────
@@ -282,6 +337,7 @@ module.exports = async function restaurantRoutes(fastify) {
             cree_par_type:  'staff',
             metadata:       JSON.stringify({ numero_commande: commandeAvant.numero_commande, mode_reglement: 'chambre' }),
           })
+          await insererTaxesFolio(folio.id)
 
           await trx('commandes_restaurant')
             .where({ id: commandeAvant.id, hotel_id: hotelId })
@@ -303,7 +359,7 @@ module.exports = async function restaurantRoutes(fastify) {
             },
           }, trx)
 
-          return reply.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
+          return rep.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
         }
 
         // ── CAS 2 — CLIENT HÔTEL + PAIEMENT IMMÉDIAT ───────────────────────
@@ -327,12 +383,13 @@ module.exports = async function restaurantRoutes(fastify) {
             cree_par_type:  'staff',
             metadata:       JSON.stringify({ numero_commande: commandeAvant.numero_commande, mode_reglement: 'immediat' }),
           })
+          await insererTaxesFolio(folio.id)
 
           // PATCH 4 — Enregistrement paiement dans paiements (traçabilité + analytics)
           const MOYENS_VALIDES_IMM = ['carte', 'especes', 'virement', 'mobile_money']
           const moyenImm = commandeAvant.mode_paiement
           if (!moyenImm || !MOYENS_VALIDES_IMM.includes(moyenImm))
-            return reply.status(400).send({
+            return rep.status(400).send({
               erreur: `mode_paiement requis et valide pour paiement immédiat — reçu : "${moyenImm || 'absent'}"`,
               code:   'MODE_PAIEMENT_INVALIDE',
               valeurs_acceptees: MOYENS_VALIDES_IMM,
@@ -345,7 +402,7 @@ module.exports = async function restaurantRoutes(fastify) {
             folio_id:        folio.id,
             type_paiement:   moyenImm,
             statut:          'valide',
-            montant:         montant,
+            montant:         montantTTC,
             devise:          devise,
             notes:           `Paiement immédiat restaurant ${commandeAvant.numero_commande}`,
             methode_detail:  JSON.stringify({ commande_id: commandeAvant.id }),
@@ -360,8 +417,8 @@ module.exports = async function restaurantRoutes(fastify) {
             hotel_id:       hotelId,
             type_ligne:     'paiement',
             sens:           'credit',
-            prix_unitaire:  montant,
-            montant_total:  montant,
+            prix_unitaire:  montantTTC,
+            montant_total:  montantTTC,
             devise:         devise,
             description:    `Paiement restaurant immédiat — ${commandeAvant.numero_commande}`,
             reference_id:   paiement.id,
@@ -410,14 +467,27 @@ module.exports = async function restaurantRoutes(fastify) {
             },
           }, trx)
 
-          return reply.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
+          return rep.send({ message: 'Statut mis à jour', commande: updated, doit_payer: false })
         }
       }
 
       // Hors 'servie' — doit_payer selon mode_reglement et statut courant
       const doitPayer = updated.mode_reglement === 'immediat' && updated.statut !== 'servie'
-      reply.send({ message: 'Statut mis à jour', commande: updated, doit_payer: doitPayer })
+      rep.send({ message: 'Statut mis à jour', commande: updated, doit_payer: doitPayer })
     })
+    } catch (err) {
+      if (!err.reponseAnticipee) throw err
+    }
+
+    reply.status(out.code).send(out.body)
+    if (out.code >= 400) return reply
+
+
+    // LOT-PMS-01 — commande servie (après commit) : vente directe walk-in + encaissement immédiat.
+    // Les ventes portées au folio sont comptabilisées à la facture de séjour (pas ici).
+    if (nouveauStatut === 'servie' && out.code < 400) {
+      await comptabilite.publier(fastify.db, { source: 'commande_restaurant', id: req.params.id, hotelId, userId: req.user.id, log: req.log })
+    }
   })
 
   // ── GET /reservations-actives — Picker hébergement POS ───────────────────

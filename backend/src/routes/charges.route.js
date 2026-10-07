@@ -1,5 +1,7 @@
 'use strict'
 
+const comptabilite = require('../services/comptabilite.bridge')
+
 const { ValidationError, NotFoundError, ConflictError } = require('../errors')
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -146,8 +148,9 @@ module.exports = async function chargesRoutes(fastify) {
   fastify.put('/:id', { preHandler: [...pre, rolesTous] }, async (req, reply) => {
     const existante = await fastify.db('charges').where({ id: req.params.id, hotel_id: req.hotelId }).first()
     if (!existante) throw new NotFoundError('Charge')
-    if (existante.statut === 'payee')
-      throw new ConflictError('Impossible de modifier une charge déjà payée', 'CHARGE_PAYEE')
+    // LOT-PMS-01 — une charge validée est comptabilisée : elle n'est plus modifiable
+    if (existante.statut !== 'saisie')
+      throw new ConflictError(`Impossible de modifier une charge ${existante.statut}`, existante.statut === 'payee' ? 'CHARGE_PAYEE' : 'CHARGE_VALIDEE')
 
     const CHAMPS = ['categorie_id', 'libelle', 'montant', 'devise', 'date_charge', 'piece_jointe_url', 'notes']
     const updateData = { mis_a_jour_le: fastify.db.fn.now() }
@@ -178,6 +181,7 @@ module.exports = async function chargesRoutes(fastify) {
       .returning('*')
 
     req.log.info({ charge_id: charge.id, hotel_id: req.hotelId }, 'Charge validée')
+    await comptabilite.publier(fastify.db, { source: 'charge', id: charge.id, hotelId: req.hotelId, userId: req.user.id, log: req.log })
     return reply.send({ message: 'Charge validée', charge })
   })
 

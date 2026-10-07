@@ -70,6 +70,42 @@ function CarteConversation({ conv, active, onClick }) {
   )
 }
 
+const LIBELLES_DEMANDE = {
+  appel_reception: 'Appel réception', serviettes: 'Serviettes', oreillers: 'Oreillers', glacons: 'Glaçons',
+  taxi: 'Taxi', premiers_soins: 'Premiers soins', menage_complet: 'Ménage complet', faire_lit: 'Faire le lit',
+  turndown: 'Couverture soir',
+}
+
+function LigneDemande({ d, action, onStatut }) {
+  const occupe = action === d.id
+  const heure = new Date(d.cree_le).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+  return (
+    <div className="text-xs text-gray-200">
+      <div className="flex items-center justify-between gap-2">
+        <span>Ch. {d.numero_chambre} · {LIBELLES_DEMANDE[d.type_service] || d.type_service} · {heure}</span>
+        <span className={d.statut === 'en_cours' ? 'text-blue-300' : 'text-amber-300'}>
+          {d.statut === 'en_cours' ? 'En cours' : 'En attente'}
+        </span>
+      </div>
+      {d.statut === 'en_cours' && d.pris_en_charge_par && (
+        <div className="text-[10px] text-gray-400">Pris en charge par {d.pris_en_charge_par}</div>
+      )}
+      <div className="flex gap-1 mt-1">
+        {d.statut === 'nouvelle' && (
+          <button disabled={occupe} onClick={() => onStatut(d.id, 'en_cours')}
+            className="px-2 py-0.5 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 rounded text-white">
+            {occupe ? '…' : 'Prendre en charge'}
+          </button>
+        )}
+        <button disabled={occupe} onClick={() => onStatut(d.id, 'traitee')}
+          className="px-2 py-0.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 rounded text-white">
+          {occupe ? '…' : 'Résolu ✓'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function MessagesPortailPage() {
   const [conversations, setConversations]       = useState([])
   const [convActive, setConvActive]             = useState(null)
@@ -80,6 +116,8 @@ export default function MessagesPortailPage() {
   const [envoi, setEnvoi]                       = useState(false)
   const [recherche, setRecherche]               = useState('')
   const [appels, setAppels]                     = useState([])
+  const [demandes, setDemandes]                 = useState([])
+  const [actionDemande, setActionDemande]       = useState(null)
   const filRef      = useRef(null)
   const pollingRef  = useRef(null)
   const appelsRef   = useRef(null)
@@ -100,12 +138,27 @@ export default function MessagesPortailPage() {
   // ── Charger les appels réception ────────────────────────────────────────────
   const chargerAppels = useCallback(async () => {
     try {
-      const { data } = await portailInboxAPI.appels()
-      setAppels(data.appels || [])
+      const [a, d] = await Promise.all([portailInboxAPI.appels(), portailInboxAPI.demandes()])
+      setAppels(a.data.appels || [])
+      setDemandes(d.data.demandes || [])
     } catch {
       // silencieux — alertes non critiques
     }
   }, [])
+
+  // ── Cycle demande : nouvelle → en_cours → traitee (HELICONIA-READY-01) ──────
+  const changerStatut = useCallback(async (id, statut) => {
+    setActionDemande(id)
+    try {
+      await portailInboxAPI.statutDemande(id, statut)
+      toast.success(statut === 'en_cours' ? 'Demande prise en charge' : 'Demande résolue')
+      await chargerAppels()
+    } catch (err) {
+      toast.error(err.response?.data?.erreur || 'Action impossible, réessayez')
+    } finally {
+      setActionDemande(null)
+    }
+  }, [chargerAppels])
 
   // ── Polling 30s conversations + 15s appels ──────────────────────────────────
   useEffect(() => {
@@ -194,23 +247,20 @@ export default function MessagesPortailPage() {
                 <div className="flex items-center gap-2 mb-2">
                   <span className="animate-pulse text-lg">📞</span>
                   <span className="font-bold text-red-300 text-sm">
-                    {appels.length} appel{appels.length > 1 ? 's' : ''} en attente
+                    {appels.length} appel{appels.length > 1 ? 's' : ''} réception
                   </span>
                 </div>
-                <div className="space-y-1">
-                  {appels.map(a => (
-                    <div key={a.id} className="flex items-center justify-between text-xs text-gray-300">
-                      <span>Chambre {a.numero_chambre} · {new Date(a.cree_le).toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit'})}</span>
-                      <button
-                        onClick={async () => {
-                          await portailInboxAPI.traiterAppel(a.id)
-                          chargerAppels()
-                        }}
-                        className="px-2 py-0.5 bg-red-700 hover:bg-red-600 rounded text-white ml-3">
-                        Traité ✓
-                      </button>
-                    </div>
-                  ))}
+                <div className="space-y-2">
+                  {appels.map(a => <LigneDemande key={a.id} d={a} action={actionDemande} onStatut={changerStatut} />)}
+                </div>
+              </div>
+            )}
+
+            {demandes.length > 0 && (
+              <div className="bg-amber-900/30 border border-amber-500/40 rounded-xl p-3 mb-4">
+                <div className="font-bold text-amber-300 text-sm mb-2">🛎 {demandes.length} demande{demandes.length > 1 ? 's' : ''} chambre</div>
+                <div className="space-y-2">
+                  {demandes.map(d => <LigneDemande key={d.id} d={d} action={actionDemande} onStatut={changerStatut} />)}
                 </div>
               </div>
             )}

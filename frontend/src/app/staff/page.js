@@ -12,7 +12,10 @@ export default function StaffPage() {
   const [staff, setStaff]       = useState([])
   const [loading, setLoading]   = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm]         = useState({ prenom:'', nom:'', email:'', role:'reception', mot_de_passe:'demo123' })
+  // QA-01 : plus de mot de passe pré-rempli (« demo123 ») — vide ⇒ mot de passe temporaire généré
+  // par le serveur, affiché une fois ; changement imposé à la première connexion.
+  const [form, setForm]         = useState({ prenom:'', nom:'', email:'', role:'reception', mot_de_passe:'' })
+  const [mdpTemporaire, setMdpTemporaire] = useState(null)
 
   useEffect(() => { charger() }, [])
 
@@ -28,17 +31,19 @@ export default function StaffPage() {
   async function creerUtilisateur(e) {
     e.preventDefault()
     try {
-      await utilisateursAPI.creer(form)
+      const { mot_de_passe, ...reste } = form
+      const res = await utilisateursAPI.creer(mot_de_passe ? form : reste)
       toast.success('Utilisateur créé !')
+      setMdpTemporaire(res.data?.mot_de_passe_temporaire ? { email: form.email, mdp: res.data.mot_de_passe_temporaire } : null)
       setShowForm(false)
-      setForm({ prenom:'', nom:'', email:'', role:'reception', mot_de_passe:'demo123' })
+      setForm({ prenom:'', nom:'', email:'', role:'reception', mot_de_passe:'' })
       charger()
     } catch (err) {
       const msg = err?.response?.data?.erreur || err?.message || ''
       if (msg.includes('dupliquée') || msg.includes('unique') || err?.response?.status === 409) {
         toast.error('Cet email est déjà utilisé')
       } else {
-        toast.error('Erreur création utilisateur')
+        toast.error(err?.response?.data?.erreur || 'Erreur création utilisateur')
       }
     }
   }
@@ -86,12 +91,21 @@ export default function StaffPage() {
                   {Object.entries(ROLE_LABEL).filter(([k]) => k !== 'super_admin').map(([k,v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
               </div>
-              <div><label className="form-label">Mot de passe</label><input className="input" value={form.mot_de_passe} onChange={e => setForm({...form, mot_de_passe:e.target.value})} /></div>
+              <div><label className="form-label">Mot de passe</label><input className="input" type="password" autoComplete="new-password" minLength={8} placeholder="Vide = généré automatiquement" value={form.mot_de_passe} onChange={e => setForm({...form, mot_de_passe:e.target.value})} /></div>
               <div className="flex items-end gap-2">
                 <button type="button" onClick={() => setShowForm(false)} className="btn btn-ghost btn-sm">Annuler</button>
                 <button type="submit" className="btn btn-primary btn-sm">Créer</button>
               </div>
             </form>
+          </div>
+        )}
+
+        {mdpTemporaire && (
+          <div className="card p-4 border border-amber-500/30" data-testid="mdp-temporaire">
+            <div className="text-xs font-bold text-amber-400 mb-1">Mot de passe temporaire de {mdpTemporaire.email}</div>
+            <div className="font-mono text-sm text-[var(--text-1)]">{mdpTemporaire.mdp}</div>
+            <div className="text-[10px] text-[var(--text-4)] mt-1">Affiché une seule fois — à transmettre de façon sécurisée. Changement imposé à la première connexion.</div>
+            <button type="button" onClick={() => setMdpTemporaire(null)} className="btn btn-ghost btn-sm mt-2">J&apos;ai noté</button>
           </div>
         )}
 

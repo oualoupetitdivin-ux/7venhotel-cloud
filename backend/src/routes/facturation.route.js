@@ -5,7 +5,7 @@ const fs   = require('fs/promises')
 
 const { createFacturationService }  = require('../services/facturation.service')
 const { createFacturationRepository } = require('../repositories/facturation.repository')
-const { genererFacturePDF, FACTURES_DIR } = require('../services/pdf.service')
+const { genererFacturePDF, chargerHotelFacture, FACTURES_DIR } = require('../services/pdf.service')
 const { ValidationError }           = require('../errors')
 const {
   validerAjoutLigne,
@@ -50,6 +50,8 @@ module.exports = async function facturationRoutes(fastify) {
       incluse_prix: incluse_prix || false, ordre: ordre || 10,
       hotel_id: request.hotelId,
     }).returning('*')
+    // LOT-PMS-02 — taxes = source normative ; l'écran Réglages en est le reflet
+    await require('../services/fiscalite.service').refleterDansParametres(fastify.db, request.hotelId)
     return reply.status(201).send({ message: 'Taxe créée', taxe })
   })
 
@@ -67,6 +69,7 @@ module.exports = async function facturationRoutes(fastify) {
       .update(updateData)
       .returning('*')
     if (!updated) return reply.status(404).send({ erreur: 'Taxe introuvable' })
+    await require('../services/fiscalite.service').refleterDansParametres(fastify.db, request.hotelId)
     return reply.send({ message: 'Taxe mise à jour', taxe: updated })
   })
 
@@ -222,16 +225,10 @@ module.exports = async function facturationRoutes(fastify) {
     const facture = await repo.trouverFactureParId(request.params.id, request.hotelId)
     if (!facture) return reply.status(404).send({ erreur: 'Facture introuvable' })
 
-    // Chercher le fichier sur disque
+    // HELICONIA-READY-01 — toujours régénéré (~15 ms) : le PDF reflète le logo et
+    // l'identité courants de l'hôtel et l'état réel du folio (paiements postérieurs).
     let pdfPath = null
-    if (facture.url_pdf) {
-      const candidat = path.join(FACTURES_DIR, '..', facture.url_pdf)
-      try { await fs.access(candidat); pdfPath = candidat }
-      catch { /* fichier absent — régénération ci-dessous */ }
-    }
-
-    // Régénérer si nécessaire
-    if (!pdfPath) {
+    {
       try {
         const db         = fastify.db
         const hotelId    = request.hotelId
@@ -249,15 +246,7 @@ module.exports = async function facturationRoutes(fastify) {
             )
             .first(),
           db('folios').where({ reservation_id: reservationId, hotel_id: hotelId }).first(),
-          db('hotels AS h')
-            .leftJoin('parametres_hotel AS ph', 'ph.hotel_id', 'h.id')
-            .where('h.id', hotelId)
-            .select(
-              'h.nom',
-              db.raw("ph.parametres_supplementaires->>'adresse' AS adresse"),
-              db.raw("ph.parametres_supplementaires->>'email_contact' AS email")
-            )
-            .first(),
+          chargerHotelFacture(db, hotelId),
         ])
 
         if (!reservation || !folio)
@@ -272,7 +261,7 @@ module.exports = async function facturationRoutes(fastify) {
         const { cheminRelatif, filepath } = await genererFacturePDF({
           facture,
           reservation,
-          hotel:     { nom: hotel?.nom || 'Hôtel', adresse: hotel?.adresse, email: hotel?.email },
+          hotel,
           client:    { nom: reservation.nom_client, email: reservation.email_client, telephone: reservation.telephone_client },
           lignes:    lignes.map(l => ({ ...l, montant: l.montant_total })),
           paiements,

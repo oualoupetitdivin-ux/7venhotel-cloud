@@ -15,6 +15,20 @@ module.exports = async function hotelsRoutes(fastify) {
     reply.send({ hotels })
   })
 
+  // ── GET /modules — Modules disponibles pour le tenant courant ──────────────
+  // Expose le résultat de loadSubscriptionContext pour le frontend.
+  // Utilisé par useTenantModules() pour le module-gating Sidebar.
+  // NE constitue PAS une barrière de sécurité — le backend enforce toujours via PolicyEngine.
+  fastify.get('/modules', { preHandler: [fastify.authentifier, fastify.resolveTenantContext] }, async (req, reply) => {
+    if (!req.tenantId) return reply.status(400).send({ erreur: 'Tenant non résolu', code: 'TENANT_MANQUANT' })
+    const ctx = await fastify.policy.loadSubscriptionContext(req.tenantId)
+    reply.send({
+      plan:    ctx.plan,
+      statut:  ctx.statut,
+      modules: ctx.modules,
+    })
+  })
+
   // ── POST / — Création avec enforcement quota ─────────────────────────────
   fastify.post('/', { preHandler: [fastify.authentifier, fastify.verifierRole(['super_admin', 'manager'])] }, async (req, reply) => {
     const tenantId = req.user.scope === 'platform' ? req.headers['x-tenant-id'] : req.user.tenant_id
@@ -109,6 +123,9 @@ module.exports = async function hotelsRoutes(fastify) {
       await fastify.db('parametres_hotel').insert({ hotel_id: req.params.id, ...req.body })
     }
 
+    // LOT-PMS-02 — Réglages fiscaux = façade de la table `taxes` (seule source de calcul)
+    await require('../services/fiscalite.service').synchroniserDepuisParametres(fastify.db, req.params.id, req.body || {})
+
     // Audit log — même pour super_admin
     const hotel = await fastify.db('hotels').where({ id: req.params.id }).select('tenant_id').first()
     await fastify.db('logs_audit').insert({
@@ -167,5 +184,62 @@ module.exports = async function hotelsRoutes(fastify) {
     }
 
     reply.send({ message: 'Image uploadée', url: imageUrl })
+  })
+
+  // ── Logo de l'hôtel (HELICONIA-READY-01) — affiché sur la facture ─────────
+  // PNG / JPEG uniquement : seuls formats intégrables dans le PDF (pdf-lib).
+  // Contrôle sur la signature binaire, pas seulement l'extension.
+  const LOGO_MAX_OCTETS = 2 * 1024 * 1024
+  const LOGO_DIR        = path.join(__dirname, '../../../uploads/logos')
+  const formatLogo = (buf) => {
+    if (buf.length > 8 && buf[0] === 0x89 && buf.toString('latin1', 1, 4) === 'PNG') return '.png'
+    if (buf.length > 3 && buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return '.jpg'
+    return null
+  }
+  const hotelDuTenant = async (req, reply) => {
+    const q = fastify.db('hotels').where({ id: req.params.id })
+    if (req.user.scope !== 'platform') q.where({ tenant_id: req.user.tenant_id })
+    const hotel = await q.first()
+    if (!hotel) reply.status(403).send({ erreur: 'Accès refusé', code: 'HOTEL_ACCES_REFUSE' })
+    return hotel
+  }
+  const supprimerFichierLogo = (url) => {
+    if (url?.startsWith('/uploads/logos/'))
+      fs.unlink(path.join(__dirname, '../../../', url)).catch(() => {})
+  }
+
+  fastify.post('/:id/logo', {
+    preHandler: [fastify.authentifier, fastify.verifierRole(['super_admin', 'manager'])]
+  }, async (req, reply) => {
+    const hotel = await hotelDuTenant(req, reply)
+    if (!hotel) return
+
+    const data = await req.file()
+    if (!data) return reply.status(400).send({ erreur: 'Fichier manquant', code: 'FICHIER_MANQUANT' })
+    const buffer = await data.toBuffer()
+    if (buffer.length > LOGO_MAX_OCTETS)
+      return reply.status(400).send({ erreur: 'Logo trop lourd (2 Mo maximum)', code: 'LOGO_TROP_LOURD' })
+    const ext = formatLogo(buffer)
+    if (!ext) return reply.status(400).send({ erreur: 'Format non supporté. Utilisez PNG ou JPEG.', code: 'LOGO_FORMAT' })
+
+    await fs.mkdir(LOGO_DIR, { recursive: true })
+    const filename = `${hotel.id}-${crypto.randomBytes(6).toString('hex')}${ext}`
+    await fs.writeFile(path.join(LOGO_DIR, filename), buffer)
+    const logoUrl = `/uploads/logos/${filename}`
+
+    await fastify.db('hotels').where({ id: hotel.id }).update({ logo_url: logoUrl })
+    supprimerFichierLogo(hotel.logo_url)
+    req.log.info({ hotel_id: hotel.id, taille: buffer.length }, 'Logo hôtel mis à jour')
+    reply.status(201).send({ message: 'Logo enregistré', logo_url: logoUrl })
+  })
+
+  fastify.delete('/:id/logo', {
+    preHandler: [fastify.authentifier, fastify.verifierRole(['super_admin', 'manager'])]
+  }, async (req, reply) => {
+    const hotel = await hotelDuTenant(req, reply)
+    if (!hotel) return
+    await fastify.db('hotels').where({ id: hotel.id }).update({ logo_url: null })
+    supprimerFichierLogo(hotel.logo_url)
+    reply.send({ message: 'Logo supprimé' })
   })
 }

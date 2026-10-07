@@ -86,9 +86,14 @@ module.exports = async function menageRoutes(fastify) {
         .leftJoin('chambres AS ch', 'ch.id', 't.chambre_id')
         .leftJoin('utilisateurs AS u', 'u.id', 't.assignee_a')
         .where({ 't.hotel_id': req.hotelId, 't.statut': s })
-        .where('t.date_tache', dateCible)
+        // HELICONIA-READY-01 — une tâche non terminée d'un jour précédent restait hors du
+        // kanban (chambre « sale » sans mission visible). Elle est reportée et marquée en retard.
+        .where(q => ['ouverte', 'assignee', 'en_cours'].includes(s)
+          ? q.where('t.date_tache', '<=', dateCible)
+          : q.where('t.date_tache', dateCible))
         .select(
           't.*', 'ch.numero AS numero_chambre',
+          fastify.db.raw('(t.date_tache < ?) AS en_retard', [dateCible]),
           fastify.db.raw("u.prenom || ' ' || u.nom AS nom_agent"),
           fastify.db.raw("EXTRACT(EPOCH FROM (NOW() - t.cree_le))/60 AS minutes_depuis_creation"),
           fastify.db.raw("CASE WHEN t.heure_debut IS NOT NULL THEN EXTRACT(EPOCH FROM (NOW() - t.heure_debut))/60 END AS minutes_en_cours"),

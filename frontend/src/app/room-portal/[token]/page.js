@@ -41,6 +41,10 @@ const STATUT_DEMANDE = {
   annulee:        { bg:'bg-red-500/20',     text:'text-red-400',     label:'Annulée'    },
 }
 
+const STATUT_COMMANDE = {
+  nouvelle: 'Reçue', en_preparation: 'En préparation', prete: 'Prête', servie: 'Servie', annulee: 'Annulée',
+}
+
 function BadgeStatut({ statut }) {
   const s = STATUT_DEMANDE[statut] || STATUT_DEMANDE.nouvelle
   return (
@@ -62,23 +66,18 @@ export default function RoomPortal() {
   const [invalid,      setInvalid]      = useState(false)
   const [erreurMsg,    setErreurMsg]    = useState(null)
 
+  // LOT-GUEST-01 — room service réel : catalogue de l'hôtel, panier, commandes suivies
+  const [menu,       setMenu]       = useState(null)
+  const [panier,     setPanier]     = useState({})
+  const [commandes,  setCommandes]  = useState([])
+  const [commandeEnCours, setCommandeEnCours] = useState(false)
+
   const [msgText,    setMsgText]    = useState('')
   const [msgSending, setMsgSending] = useState(false)
   const [feedback,   setFeedback]   = useState(null)
   const messagesEndRef = useRef(null)
 
   useEffect(() => {
-    if (token === 'demo') {
-      setSession({
-        numero_chambre: '401', nom_client: 'Émilie Rousseau',
-        date_depart: '2026-12-31', telephone_hotel: '+237 222 123 456',
-        nom_hotel: '7venHotel', ville_hotel: 'Kribi',
-        tarif_nuit: 35000, total_hebergement: 105000, total_general: 105000,
-        nombre_nuits: 3, devise: 'XAF',
-      })
-      setLoading(false)
-      return
-    }
     initialiserSession()
   }, [token])
 
@@ -146,6 +145,7 @@ export default function RoomPortal() {
       })
       setMessages(contexte.messages || [])
       setDemandes(contexte.demandes_service || [])
+      setCommandes(contexte.commandes_room_service || [])
     } finally {
       setLoading(false)
     }
@@ -163,7 +163,7 @@ export default function RoomPortal() {
       }])
       setMsgText('')
     } catch (err) {
-      afficherFeedback('err', err.message || 'Erreur d\'envoi — réessayez')
+      if (!gererErreurSession(err)) afficherFeedback('err', err.message || 'Erreur d\'envoi — réessayez')
     } finally {
       setMsgSending(false)
     }
@@ -181,7 +181,52 @@ export default function RoomPortal() {
       }, ...prev])
       afficherFeedback('ok', 'Demande envoyée ✓ Notre équipe intervient rapidement.')
     } catch (err) {
-      afficherFeedback('err', err.message || 'Erreur — réessayez')
+      if (!gererErreurSession(err)) afficherFeedback('err', err.message || 'Erreur — réessayez')
+    }
+  }
+
+  // Séjour terminé / session révoquée pendant l'utilisation : on ferme le portail
+  function gererErreurSession(err) {
+    if (err && err.status === 401) {
+      setErreurMsg(err.message || "Votre séjour est terminé. Le portail n'est plus accessible.")
+      setInvalid(true)
+      return true
+    }
+    return false
+  }
+
+  async function chargerMenu() {
+    if (!sessionToken) return
+    try {
+      const data = await portailFetch(sessionToken, 'GET', '/menu')
+      setMenu(data.articles || [])
+    } catch (err) {
+      if (!gererErreurSession(err)) { setMenu([]); afficherFeedback('err', err.message || 'Menu indisponible') }
+    }
+  }
+
+  function modifierPanier(articleId, delta) {
+    setPanier(prev => {
+      const q = Math.max(0, Math.min(20, (prev[articleId] || 0) + delta))
+      const suivant = { ...prev, [articleId]: q }
+      if (!q) delete suivant[articleId]
+      return suivant
+    })
+  }
+
+  async function commanderRoomService() {
+    const lignes = Object.entries(panier).map(([article_id, quantite]) => ({ article_id, quantite }))
+    if (!lignes.length || commandeEnCours || !sessionToken) return
+    setCommandeEnCours(true)
+    try {
+      const { commande } = await portailFetch(sessionToken, 'POST', '/room-service', { lignes })
+      setCommandes(prev => [commande, ...prev])
+      setPanier({})
+      afficherFeedback('ok', `Commande ${commande.numero_commande} transmise au restaurant ✓`)
+    } catch (err) {
+      if (!gererErreurSession(err)) afficherFeedback('err', err.message || 'Erreur — réessayez')
+    } finally {
+      setCommandeEnCours(false)
     }
   }
 
@@ -225,7 +270,8 @@ export default function RoomPortal() {
     { id:'food',  icone:'🍽', titre:'Room Service', sub:'Repas & boissons'  },
     { id:'hk',   icone:'🧹', titre:'Ménage',        sub:'Nettoyage & linge' },
     { id:'msg',  icone:'💬', titre:'Réception',     sub:'Messagerie directe', badge: badgeMsg > 0 ? badgeMsg : null },
-    { id:'reco', icone:'🗺', titre: villeHotel,     sub:'Recommandations'  },
+    // HELICONIA-READY-01 — tuile « Recommandations » retirée : contenu codé en dur (Kribi),
+    // identique pour tous les hôtels. À réintroduire quand l'hôtel pourra saisir ses suggestions.
     { id:'folio',icone:'📋', titre:'Mon folio',     sub:'Mes consommations' },
   ]
 
@@ -282,7 +328,7 @@ export default function RoomPortal() {
             <div className="text-[9.5px] font-bold uppercase tracking-widest text-gray-500 mb-3">Services</div>
             <div className="grid grid-cols-2 gap-3 mb-5">
               {SERVICES.map(s => (
-                <button key={s.id} onClick={() => setSection(s.id)}
+                <button key={s.id} onClick={() => { setSection(s.id); if (s.id === 'food' && menu === null) chargerMenu() }}
                   className="relative bg-[#111827] border border-white/10 rounded-2xl p-5 flex flex-col items-center text-center hover:border-blue-500/40 transition-all">
                   <div className="text-3xl mb-2">{s.icone}</div>
                   <div className="text-sm font-bold text-white">{s.titre}</div>
@@ -311,35 +357,64 @@ export default function RoomPortal() {
           </>
         )}
 
-        {/* ── Room Service ─────────────────────────────────────────────────────── */}
+        {/* ── Room Service (catalogue réel, commande imputée à la chambre) ─────── */}
         {section === 'food' && (
           <div>
             <button onClick={() => setSection('accueil')} className="text-xs text-blue-400 mb-4 flex items-center gap-1">← Retour</button>
             <h3 className="text-base font-black text-white mb-1">🍽 Room Service</h3>
-            <div className="text-[9.5px] text-gray-500 text-center mb-4">⏱ Livraison en ~30 minutes</div>
-            {[
-              { icone:'☕', nom:'Café ou thé',         prix:800   },
-              { icone:'🥐', nom:'Viennoiseries ×3',    prix:2800  },
-              { icone:'🍳', nom:'Omelette du chef',    prix:3500  },
-              { icone:'🥪', nom:'Club sandwich',       prix:4800  },
-              { icone:'🥩', nom:'Entrecôte grillée',   prix:18500 },
-              { icone:'🍊', nom:'Jus de fruits frais', prix:1800  },
-              { icone:'💧', nom:'Eau minérale ×2',     prix:1200  },
-            ].map(item => (
-              <div key={item.nom} className="bg-[#111827] border border-white/10 rounded-xl p-3.5 mb-2 flex items-center justify-between">
-                <div>
-                  <div className="text-xs font-bold text-white">{item.icone} {item.nom}</div>
-                  <div className="text-[10px] text-blue-400 mt-0.5">
-                    {item.prix.toLocaleString('fr-FR')} {session?.devise || 'XAF'}
-                  </div>
+            <div className="text-[9.5px] text-gray-500 text-center mb-4">Les consommations sont ajoutées à votre note de chambre après le service</div>
+            {menu === null && (
+              <div className="flex justify-center py-8"><div className="w-6 h-6 border-2 border-gray-700 border-t-blue-500 rounded-full animate-spin"/></div>
+            )}
+            {menu !== null && menu.length === 0 && (
+              <div className="text-center text-gray-500 text-xs py-8 bg-[#111827] border border-white/10 rounded-xl">Aucun article disponible pour le moment</div>
+            )}
+            {(menu || []).map(item => (
+              <div key={item.id} data-testid="article-menu" className="bg-[#111827] border border-white/10 rounded-xl p-3.5 mb-2 flex items-center justify-between">
+                <div className="pr-2">
+                  <div className="text-xs font-bold text-white">{item.nom}</div>
+                  {item.description && <div className="text-[10px] text-gray-500">{item.description}</div>}
+                  <div className="text-[10px] text-blue-400 mt-0.5">{Number(item.prix).toLocaleString('fr-FR')} {item.devise || session?.devise || 'XAF'}</div>
                 </div>
-                <button
-                  onClick={() => demanderService('room_service', `${item.icone} ${item.nom} — ${item.prix.toLocaleString('fr-FR')} ${session?.devise || 'XAF'}`)}
-                  className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors">
-                  Commander
-                </button>
+                <div className="flex items-center gap-2">
+                  {panier[item.id] > 0 && (
+                    <button onClick={() => modifierPanier(item.id, -1)} aria-label={`Retirer ${item.nom}`}
+                      className="w-7 h-7 rounded-lg bg-white/10 text-white text-sm font-bold">−</button>
+                  )}
+                  {panier[item.id] > 0 && <span className="text-xs font-bold text-white w-4 text-center">{panier[item.id]}</span>}
+                  <button onClick={() => modifierPanier(item.id, 1)} aria-label={`Ajouter ${item.nom}`}
+                    className="w-7 h-7 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold">+</button>
+                </div>
               </div>
             ))}
+            {Object.keys(panier).length > 0 && (
+              <div className="sticky bottom-24 bg-[#0D1829] border border-blue-500/30 rounded-2xl p-4 mt-4">
+                <div className="flex justify-between text-xs mb-3">
+                  <span className="text-gray-400">{Object.values(panier).reduce((a, b) => a + b, 0)} article(s)</span>
+                  <span className="text-white font-bold">
+                    {(menu || []).reduce((t, a) => t + (panier[a.id] || 0) * Number(a.prix), 0).toLocaleString('fr-FR')} {session?.devise || 'XAF'} <span className="text-gray-500 font-normal">HT</span>
+                  </span>
+                </div>
+                <button onClick={commanderRoomService} disabled={commandeEnCours}
+                  className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-bold py-2.5 rounded-xl">
+                  {commandeEnCours ? 'Envoi…' : 'Commander'}
+                </button>
+              </div>
+            )}
+            {commandes.length > 0 && (
+              <>
+                <div className="text-[9.5px] font-bold uppercase tracking-widest text-gray-500 mt-6 mb-3">Mes commandes</div>
+                {commandes.map(c => (
+                  <div key={c.id} data-testid="commande-room-service" className="bg-[#111827] border border-white/10 rounded-xl p-3 mb-2 flex justify-between items-center">
+                    <div>
+                      <div className="text-xs font-bold text-white">{c.numero_commande}</div>
+                      <div className="text-[10px] text-gray-500">{fmtDate(c.cree_le)} à {fmtHeure(c.cree_le)}</div>
+                    </div>
+                    <span className="text-[10px] font-bold text-blue-400">{STATUT_COMMANDE[c.statut] || c.statut}</span>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         )}
 
@@ -450,11 +525,11 @@ export default function RoomPortal() {
                 </span>
                 <span className="text-white font-bold">{formatMontant(session?.total_hebergement)}</span>
               </div>
-              {demandes.some(d => d.type_service === 'room_service') && (
+              {commandes.length > 0 && (
                 <div className="flex justify-between text-xs mb-2">
                   <span className="text-gray-400">Room Service</span>
                   <span className="text-white font-bold">
-                    {demandes.filter(d => d.type_service === 'room_service').length} commande(s)
+                    {commandes.length} commande(s)
                   </span>
                 </div>
               )}

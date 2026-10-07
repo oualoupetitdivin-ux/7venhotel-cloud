@@ -9,6 +9,8 @@
 // Données exposées : métriques agrégées multi-tenant, jamais données brutes clients.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const { createSnapshot } = require('../utils/subscription.bridge')
+
 module.exports = async function platformRoutes(fastify) {
   const pre = [fastify.authentifier, fastify.scopePlateforme]
 
@@ -237,6 +239,117 @@ module.exports = async function platformRoutes(fastify) {
     const profile = await fastify.tenantLifecycle.getLifecycleProfile(req.params.id)
     if (!profile) return reply.status(404).send({ erreur: 'Tenant introuvable', code: 'TENANT_INTROUVABLE' })
     return reply.send(profile)
+  })
+
+  // ── PATCH /platform/tenants/:id/plan ─────────────────────────────────────
+  // Modifie le plan commercial d'un tenant existant.
+  // Règles :
+  //   • Modifie abonnements.plan uniquement (pas de snapshot Billing — A2)
+  //   • Transactionnel : UPDATE + audit PLAN_CHANGE en une transaction
+  //   • Invalide le cache PolicyEngine post-commit
+  //   • Ne modifie PAS tenants.statut
+  //   • Ne touche PAS les tables CONFIG ni Billing
+  fastify.patch('/tenants/:id/plan', { preHandler: pre }, async (req, reply) => {
+    const { id }           = req.params
+    const { plan: nvPlan } = req.body || {}
+
+    // 1. Plan fourni
+    if (!nvPlan) return reply.status(400).send({ erreur: 'Champ plan requis', code: 'PLAN_MANQUANT' })
+
+    // 2. Plan valide dans CONFIG (lecture seule — aucune modification CONFIG)
+    const planRef = await fastify.db('platform_plans').where({ code: nvPlan, actif: true }).first()
+    if (!planRef) return reply.status(400).send({
+      erreur:       `Plan inconnu ou inactif : ${nvPlan}`,
+      code:         'PLAN_INVALIDE',
+      plans_valides: ['essai', 'starter', 'business', 'ohada+', 'enterprise'],
+    })
+
+    // 3. Tenant existe
+    const tenant = await fastify.db('tenants').where({ id }).first()
+    if (!tenant) return reply.status(404).send({ erreur: 'Tenant introuvable', code: 'TENANT_INTROUVABLE' })
+
+    // 4. Abonnement principal (actif prioritaire, puis essai)
+    const abonnement = await fastify.db('abonnements')
+      .where({ tenant_id: id })
+      .orderByRaw("CASE WHEN statut = 'actif' THEN 0 WHEN statut = 'essai' THEN 1 ELSE 2 END")
+      .orderBy('cree_le', 'desc')
+      .first()
+    if (!abonnement) return reply.status(409).send({ erreur: 'Aucun abonnement trouvé pour ce tenant', code: 'ABONNEMENT_ABSENT' })
+
+    const ancienPlan = abonnement.plan
+    if (ancienPlan === nvPlan) return reply.status(409).send({ erreur: `Le tenant est déjà sur le plan ${nvPlan}`, code: 'PLAN_INCHANGE' })
+
+    // 5. Transaction : UPDATE abonnements + audit PLAN_CHANGE + snapshot Billing (atomique — A2)
+    await fastify.db.transaction(async (trx) => {
+      await trx('abonnements')
+        .where({ id: abonnement.id })
+        .update({ plan: nvPlan, mis_a_jour_le: new Date() })
+
+      await trx('logs_audit').insert({
+        tenant_id:         id,
+        utilisateur_id:    req.user.id,
+        action:            'PLAN_CHANGE',
+        module:            'platform',
+        ressource_type:    'abonnement',
+        ressource_id:      abonnement.id,
+        anciennes_valeurs: { plan: ancienPlan },
+        nouvelles_valeurs: { plan: nvPlan },
+        ip_address:        req.ip,
+      })
+
+      await createSnapshot(trx, {
+        tenant_id:     id,
+        abonnement_id: abonnement.id,
+        plan_code:     nvPlan,
+      })
+    })
+
+    // 6. Invalider cache PolicyEngine (post-commit — évite stale read)
+    await fastify.cache.del(`tenant:${id}:subscription`)
+
+    // 7. Recharger depuis DB pour confirmer effectivité immédiate
+    const ctx = await fastify.policy.loadSubscriptionContext(id)
+
+    return reply.send({
+      message:      `Plan modifié : ${ancienPlan} → ${nvPlan}`,
+      tenant_id:    id,
+      tenant_nom:   tenant.nom,
+      ancien_plan:  ancienPlan,
+      nouveau_plan: nvPlan,
+      plan_actif:   ctx.plan,
+      statut:       ctx.statut,
+      modules:      ctx.modules,
+    })
+  })
+
+  // ── GET /platform/tenants/:id/plan-history ────────────────────────────────
+  // Historique des changements de plan d'un tenant, depuis logs_audit.
+  // Aucune nouvelle table créée — l'infrastructure d'audit existante suffit.
+  fastify.get('/tenants/:id/plan-history', { preHandler: pre }, async (req, reply) => {
+    const { id } = req.params
+
+    const tenant = await fastify.db('tenants').where({ id }).first()
+    if (!tenant) return reply.status(404).send({ erreur: 'Tenant introuvable', code: 'TENANT_INTROUVABLE' })
+
+    const historique = await fastify.db('logs_audit AS la')
+      .leftJoin('utilisateurs AS u', 'u.id', 'la.utilisateur_id')
+      .select(
+        'la.id', 'la.cree_le',
+        'la.anciennes_valeurs', 'la.nouvelles_valeurs',
+        'la.ip_address',
+        'u.email AS acteur_email', 'u.role AS acteur_role',
+      )
+      .where('la.tenant_id', id)
+      .where('la.action', 'PLAN_CHANGE')
+      .orderBy('la.cree_le', 'desc')
+      .limit(100)
+
+    return reply.send({
+      tenant_id:  id,
+      tenant_nom: tenant.nom,
+      historique,
+      total:      historique.length,
+    })
   })
 
   // ── GET /platform/billing/mrr ─────────────────────────────────────────────

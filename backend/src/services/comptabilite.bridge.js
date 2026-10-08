@@ -103,9 +103,11 @@ async function comptabiliserFacture(db, { hotelId, factureId, userId }) {
   const folio = await db('folios').where({ reservation_id: facture.reservation_id, hotel_id: hotelId }).first()
   if (!folio) throw new AccountingError('FOLIO_INTROUVABLE', 'Folio de la facture introuvable', 404)
 
-  // Lignes connues au moment de l'émission (les corrections ultérieures = avoirs)
+  // Lignes connues au moment de l'émission (les corrections ultérieures = avoirs).
+  // Comparaison en SQL : une date JS est tronquée à la milliseconde, ce qui excluait les lignes posées
+  // dans la transaction du checkout (réajustement fiscal), horodatées à la microseconde près comme la facture.
   const lignes = await db('lignes_folio').where({ folio_id: folio.id, hotel_id: hotelId })
-    .where('cree_le', '<=', facture.cree_le).orderBy('cree_le')
+    .whereRaw('cree_le <= (SELECT cree_le FROM factures WHERE id = ?)', [facture.id]).orderBy('cree_le')
   const parId = Object.fromEntries(lignes.map(l => [l.id, l]))
   const { classer, anomalies } = await classerLignes(db, hotelId, lignes)
 

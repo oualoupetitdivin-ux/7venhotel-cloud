@@ -61,9 +61,12 @@ export default function NouvelleReservationPage() {
   useEffect(() => {
     facturationAPI.taxes()
       .then(r => {
-        // Seules les taxes hébergement et "tout" s'appliquent à une réservation
+        // Mêmes critères que le moteur (trouverTaxesHebergement) : actives, hébergement|tout, hors prix.
+        // L'API renvoie toutes les taxes, y compris désactivées (champ `active`) : sans ce filtre,
+        // une TVA désactivée restait dans l'estimation.
         const taxesHotel = (r.data.taxes || []).filter(t =>
-          t.s_applique_a === 'hebergement' || t.s_applique_a === 'tout'
+          t.active !== false && !t.incluse_prix &&
+          (t.s_applique_a === 'hebergement' || t.s_applique_a === 'tout')
         )
         setTaxes(taxesHotel)
       })

@@ -2,6 +2,26 @@
 
 const Anthropic = require('@anthropic-ai/sdk')
 
+// HELICONIA-RETOUR-01 — « Ouwalou IA indisponible » : la cause réelle (prod 08/10/2026) était
+// « Your credit balance is too low to access the Anthropic API » (compte fournisseur sans crédit),
+// renvoyée au client comme un 503 générique et affichée « Vérifiez la clé ANTHROPIC_API_KEY ».
+// La réponse porte désormais la cause exacte ; aucune réponse IA simulée.
+function erreurFournisseur(err) {
+  const brut = String(err?.error?.error?.message || err?.message || '')
+  const status = err?.status
+  if (/credit balance is too low/i.test(brut))
+    return { code: 'IA_CREDIT_EPUISE', message: 'Le crédit du compte fournisseur IA (Anthropic) est épuisé. L\'administrateur de la plateforme doit recharger le compte.' }
+  if (status === 401 || /invalid x-api-key|authentication/i.test(brut))
+    return { code: 'IA_CLE_INVALIDE', message: 'La clé du fournisseur IA est refusée. L\'administrateur de la plateforme doit la vérifier.' }
+  if (status === 429)
+    return { code: 'IA_QUOTA', message: 'Limite d\'utilisation du fournisseur IA atteinte. Réessayez dans quelques minutes.' }
+  if (status === 529 || /overloaded/i.test(brut))
+    return { code: 'IA_SURCHARGE', message: 'Le fournisseur IA est momentanément surchargé. Réessayez dans quelques instants.' }
+  return { code: 'IA_INDISPONIBLE', message: 'Le fournisseur IA ne répond pas. Réessayez plus tard.' }
+}
+const IA_NON_CONFIGUREE = { erreur: 'Service IA non configuré', code: 'IA_NON_CONFIGUREE',
+  message: 'Aucune clé de fournisseur IA n\'est configurée sur le serveur. L\'administrateur de la plateforme doit la renseigner.' }
+
 module.exports = async function aiRoutes(fastify) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
   const pre = [fastify.authentifier, fastify.contexteHotel]
@@ -69,12 +89,7 @@ module.exports = async function aiRoutes(fastify) {
     const { message, historique = [] } = request.body || {}
 
     if (!message) return reply.status(400).send({ erreur: 'Message requis' })
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return reply.send({
-        reponse: 'Ouwalou AI n\'est pas configuré. Veuillez ajouter votre clé API Anthropic dans la configuration.',
-        tokens: 0
-      })
-    }
+    if (!process.env.ANTHROPIC_API_KEY) return reply.status(503).send(IA_NON_CONFIGUREE)
 
     const ctx = await getContexteHotel(request.hotelId)
     const debut = Date.now()
@@ -135,11 +150,9 @@ INSTRUCTIONS :
 
       reply.send({ reponse, tokens, duree_ms: duree })
     } catch (err) {
-      fastify.log.error(err, 'Erreur Anthropic API')
-      return reply.status(503).send({
-        erreur: 'Service IA temporairement indisponible',
-        code: 'IA_INDISPONIBLE'
-      })
+      const cause = erreurFournisseur(err)
+      fastify.log.error({ err, code: cause.code }, 'Erreur Anthropic API')
+      return reply.status(503).send({ erreur: 'Service IA indisponible', ...cause })
     }
   })
 
@@ -159,16 +172,21 @@ INSTRUCTIONS :
 
     const prompt = prompts[type] || 'Rapport complet de performance hôtelière avec alertes et recommandations prioritaires.'
 
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return reply.send({ analyse: 'Clé API Anthropic non configurée.' })
-    }
+    if (!process.env.ANTHROPIC_API_KEY) return reply.status(503).send(IA_NON_CONFIGUREE)
 
-    const response = await anthropic.messages.create({
-      model: process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
-      max_tokens: 1500,
-      system: `Tu es Ouwalou AI, assistant hôtelier expert. Données: ${JSON.stringify(ctx)}. Réponds en français avec format Markdown.`,
-      messages: [{ role: 'user', content: prompt }]
-    })
+    let response
+    try {
+      response = await anthropic.messages.create({
+        model: process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
+        max_tokens: 1500,
+        system: `Tu es Ouwalou AI, assistant hôtelier expert. Données: ${JSON.stringify(ctx)}. Réponds en français avec format Markdown.`,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    } catch (err) {
+      const cause = erreurFournisseur(err)
+      fastify.log.error({ err, code: cause.code }, 'Erreur Anthropic API (analyser)')
+      return reply.status(503).send({ erreur: 'Service IA indisponible', ...cause })
+    }
 
     reply.send({ analyse: response.content[0].text, contexte: ctx })
   })

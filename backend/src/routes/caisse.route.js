@@ -245,4 +245,66 @@ module.exports = async function caisseRoutes(fastify) {
 
     return reply.send({ session, mouvements })
   })
+
+  // ── GET /caisse/:id/journee — journée de caisse imprimable (HELICONIA-RETOUR-01) ──
+  // Une session (ouverte ou clôturée) : rubriques du théorique (même calcul que la clôture),
+  // encaissements de la fenêtre de session par mode (espèces, carte, mobile money…), mouvements.
+  // Seules les espèces entrent dans le théorique ; les autres modes sont informatifs.
+  fastify.get('/:id/journee', { preHandler: [...pre, rolesLecture] }, async (req, reply) => {
+    const db = fastify.db
+    const session = await db('sessions_caisse AS s')
+      .leftJoin('utilisateurs AS uo', 'uo.id', 's.ouverte_par')
+      .leftJoin('utilisateurs AS uf', 'uf.id', 's.fermee_par')
+      .leftJoin('hotels AS h', 'h.id', 's.hotel_id')
+      .where({ 's.id': req.params.id, 's.hotel_id': req.hotelId })
+      .select('s.*', 'h.nom AS hotel_nom',
+        db.raw("NULLIF(TRIM(COALESCE(uo.prenom,'') || ' ' || COALESCE(uo.nom,'')), '') AS ouverte_par_nom"),
+        db.raw("NULLIF(TRIM(COALESCE(uf.prenom,'') || ' ' || COALESCE(uf.nom,'')), '') AS fermee_par_nom"))
+      .first()
+    if (!session) throw new NotFoundError('Session de caisse')
+
+    const fin = session.fermee_le || new Date()
+    const calcul = await calculerTheorique(req.hotelId, session)
+
+    const encaissements = await db('paiements AS p')
+      .leftJoin('folios AS f', 'f.id', 'p.folio_id')
+      .leftJoin('clients AS c', 'c.id', 'f.client_id')
+      .where({ 'p.hotel_id': req.hotelId, 'p.statut': 'valide' })
+      .andWhereRaw('COALESCE(p.confirme_le, p.traite_le, p.cree_le) >= ? AND COALESCE(p.confirme_le, p.traite_le, p.cree_le) <= ?', [session.ouverte_le, fin])
+      .select('p.id', 'p.type_paiement', 'p.montant', 'p.reference_externe',
+        db.raw('COALESCE(p.confirme_le, p.traite_le, p.cree_le) AS date'), 'f.numero_folio',
+        db.raw("COALESCE(c.prenom || ' ' || c.nom, '—') AS nom_client"))
+      .orderByRaw('COALESCE(p.confirme_le, p.traite_le, p.cree_le)')
+
+    // Paiements saisis mais non confirmés (mobile money : confirmation opérateur) — hors totaux, affichés à part
+    const enAttente = await db('paiements AS p')
+      .leftJoin('folios AS f', 'f.id', 'p.folio_id')
+      .where({ 'p.hotel_id': req.hotelId, 'p.statut': 'en_attente' })
+      .andWhereRaw('p.cree_le >= ? AND p.cree_le <= ?', [session.ouverte_le, fin])
+      .select('p.id', 'p.type_paiement', 'p.montant', 'p.cree_le AS date', 'f.numero_folio')
+      .orderBy('p.cree_le')
+
+    const arrhes = await db('lignes_folio AS l')
+      .leftJoin('folios AS f', 'f.id', 'l.folio_id')
+      .where({ 'l.hotel_id': req.hotelId, 'l.type_ligne': 'arrhes', 'l.sens': 'credit' })
+      .andWhereRaw('l.cree_le >= ? AND l.cree_le <= ?', [session.ouverte_le, fin])
+      .select('l.id', db.raw("COALESCE(l.metadata->>'mode_paiement', 'autre') AS type_paiement"), 'l.montant_total AS montant',
+        'l.cree_le AS date', 'f.numero_folio', 'l.description')
+      .orderBy('l.cree_le')
+
+    const parMode = {}
+    for (const e of [...encaissements, ...arrhes]) parMode[e.type_paiement] = Math.round(((parMode[e.type_paiement] || 0) + Number(e.montant)) * 100) / 100
+
+    const mouvements = await db('mouvements_caisse')
+      .where({ session_id: session.id, hotel_id: req.hotelId })
+      .orderBy('cree_le', 'asc')
+
+    return reply.send({
+      session, fin,
+      theorique: calcul.theorique, detail_theorique: calcul.detail,
+      encaissements, arrhes, par_mode: parMode, en_attente: enAttente,
+      total_encaisse: Math.round(Object.values(parMode).reduce((a, b) => a + b, 0) * 100) / 100,
+      mouvements,
+    })
+  })
 }

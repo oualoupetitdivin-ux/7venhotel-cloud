@@ -78,6 +78,11 @@ export default function CuisineKDS() {
 
       {/* Header KDS */}
       <div className="flex items-center gap-4 px-5 py-3 border-b border-white/10 bg-[#0B0F1A] flex-shrink-0">
+        {/* HELICONIA-RETOUR-01 — le KDS plein écran n'a pas la barre latérale : navigation explicite */}
+        <nav className="flex items-center gap-2" aria-label="Navigation cuisine">
+          <a href="/restaurant" data-testid="kds-retour" className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white">☰ Restaurant</a>
+          <a href="/restaurant?onglet=menu" data-testid="kds-menu" className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-300">📋 Menu</a>
+        </nav>
         <div className="flex items-center gap-2">
           <span className="text-lg">🔥</span>
           <div>
@@ -100,9 +105,6 @@ export default function CuisineKDS() {
           <button onClick={charger} className="text-gray-500 hover:text-white transition-colors text-xs px-2 py-1 rounded bg-white/5 hover:bg-white/10">
             ↻
           </button>
-          <a href="/restaurant" className="text-[9px] text-gray-600 hover:text-gray-400 transition-colors">
-            → Vue complète
-          </a>
         </div>
       </div>
 

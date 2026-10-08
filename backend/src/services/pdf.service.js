@@ -229,7 +229,10 @@ async function genererFacturePDF({
 
   txt('PRESTATIONS', ML, y, { size: 7.5, font: fontB, color: grisC }); y -= 14
   enteteTableau()
-  const prestations = lignes.filter(l => !TYPES_EXCLUS_PRESTATIONS.has(l.type_ligne))
+  // Une correction de ligne taxe (réajustement fiscal) relève du récapitulatif des taxes, pas des prestations
+  const parId = Object.fromEntries(lignes.map(l => [l.id, l]))
+  const corrigeTaxe = (l) => l.type_ligne === 'correction' && parId[l.ligne_corrigee_id]?.type_ligne === 'taxe'
+  const prestations = lignes.filter(l => !TYPES_EXCLUS_PRESTATIONS.has(l.type_ligne) && !corrigeTaxe(l))
   if (!prestations.length) { txt('Aucune prestation', ML + 8, y, { color: grisC }); y -= 16 }
   for (const l of prestations) {
     if (y < 210) nouvellePage(true)
@@ -241,18 +244,25 @@ async function genererFacturePDF({
   }
 
   // ── Récapitulatif ───────────────────────────────────────────────────────
-  // Taxes regroupées par code (taux depuis la table taxes de l'hôtel) ; montants du folio.
+  // Taxes regroupées par libellé ; montants du folio. Le barème affiché est celui APPLIQUÉ à la ligne
+  // (metadata.valeur / nombre_nuits) : le taux courant de la table taxes peut avoir changé depuis
+  // (ex. TVA 19,25 % facturée, réglage passé à 18 % ensuite). Ligne sans barème → nom seul.
   const taux = Object.fromEntries((hotel?.taxes || []).map(t => [t.code, t]))
   const groupes = new Map()
-  for (const l of lignes.filter(x => x.type_ligne === 'taxe')) {
-    const code = l.metadata?.code
-    const t = code && taux[code]
-    const libelle = t
-      ? (t.type_taxe === 'pourcentage' ? `${t.nom} (${String(Number(t.valeur)).replace('.', ',')} %)` : t.nom)
-      : String(l.description || 'Taxe').split(' — ')[0]
+  for (const l of lignes.filter(x => x.type_ligne === 'taxe' || corrigeTaxe(x))) {
+    const src = l.type_ligne === 'taxe' ? l : parId[l.ligne_corrigee_id]
+    const m = src.metadata || {}
+    const t = m.code && taux[m.code]
+    const nom = t ? t.nom : String(src.description || 'Taxe').split(' — ')[0]
+    const v = m.valeur !== undefined && m.valeur !== null ? Number(m.valeur) : null
+    const nuits = Number(m.nombre_nuits) || 0
+    const libelle = v === null ? nom
+      : (m.type_taxe === 'pourcentage' ? `${nom} (${String(v).replace('.', ',')} %)`
+        : nuits ? `${nom} (${nuits} nuit${nuits > 1 ? 's' : ''} × ${fmt(v, devise)})` : nom)
     const signe = l.sens === 'credit' ? -1 : 1
     groupes.set(libelle, (groupes.get(libelle) || 0) + signe * Number(l.montant || 0))
   }
+  for (const [libelle, montant] of groupes) if (Math.round(montant * 100) === 0) groupes.delete(libelle)
 
   const paiementsValides = paiements.filter(p => p.statut === 'valide')
   const hauteurRecap = 120 + groupes.size * 14 + paiementsValides.length * 14
@@ -284,6 +294,8 @@ async function genererFacturePDF({
   y -= 2; ligneH(y + 8, rX - 10, MR)
   recap(acquittee ? 'Solde' : 'Solde restant dû', fmt(Math.max(soldeDu, 0), devise),
     { gras: true, couleur: acquittee ? vert : rouge, taille: 10 })
+  // Règlements supérieurs au total (ex. taxe réduite après un prépaiement) : montant dû au client
+  if (soldeDu < -0.5) recap('Trop-perçu à rembourser', fmt(-soldeDu, devise), { couleur: vert, taille: 9 })
 
   // ── Pied de page ────────────────────────────────────────────────────────
   for (let i = 0; i < pages.length; i++) {

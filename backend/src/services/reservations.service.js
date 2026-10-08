@@ -79,10 +79,72 @@ function createReservationsService({ db, cache }) {
         montant = parseFloat(taxe.valeur) * nombreNuits
       }
       totalTaxes += montant
-      detailTaxes.push({ code: taxe.code, nom: taxe.nom, montant })
+      detailTaxes.push({ code: taxe.code, nom: taxe.nom, montant, type_taxe: taxe.type_taxe, valeur: parseFloat(taxe.valeur) })
     }
 
     return { totalTaxes: Math.round(totalTaxes * 100) / 100, detailTaxes }
+  }
+
+  // Ligne folio d'une taxe d'hébergement : le barème appliqué (taux, nuits) est conservé dans la
+  // ligne pour que folio, facture et PDF affichent le calcul réel, même si la configuration change.
+  function ligneTaxe(folioId, hotelId, taxe, { tarifNuit, nombreNuits, devise, acteurId, acteurType, motif }) {
+    const nb = `${nombreNuits} nuit${nombreNuits > 1 ? 's' : ''}`
+    const description = taxe.type_taxe === 'fixe'
+      ? `${taxe.nom} — ${nb} × ${taxe.valeur} ${devise}`
+      : `${taxe.nom} — ${String(taxe.valeur).replace('.', ',')} % × ${nb}`
+    return {
+      folio_id: folioId, hotel_id: hotelId, type_ligne: 'taxe', sens: 'debit',
+      montant: taxe.montant, devise, description, source_module: 'reservation',
+      cree_par: acteurId || null, cree_par_type: acteurType || 'staff',
+      metadata: { code: taxe.code, type_taxe: taxe.type_taxe, valeur: taxe.valeur, nombre_nuits: nombreNuits, tarif_nuit: tarifNuit, ...(motif ? { motif } : {}) },
+    }
+  }
+
+  // ── Réajustement fiscal au départ (HELICONIA-RETOUR-01) ──────────────────
+  // Les taxes d'hébergement sont pré-facturées à la création (P5) avec la configuration du jour.
+  // La facture doit suivre la configuration fiscale EFFECTIVE à son émission : si les taxes ont
+  // changé depuis (TVA désactivée, taxe de séjour modifiée…), les lignes taxe de la réservation
+  // sont contre-passées (corrections — lignes immuables) puis reposées au barème courant.
+  // Les taxes restaurant (fait générateur = la commande) ne sont pas concernées.
+  async function reajusterTaxesHebergement(trx, folio, hotelId, acteurId) {
+    const lignes   = await trx('lignes_folio').where({ folio_id: folio.id, hotel_id: hotelId }).orderBy('cree_le')
+    const corrigees = new Set(lignes.filter(l => l.ligne_corrigee_id).map(l => l.ligne_corrigee_id))
+    const actives  = lignes.filter(l => l.sens === 'debit' && l.source_module === 'reservation' && !corrigees.has(l.id))
+    const heberg   = actives.find(l => l.type_ligne === 'hebergement' && l.metadata?.nombre_nuits)
+    if (!heberg) return []
+    const tarifNuit   = Number(heberg.metadata.tarif_nuit)
+    const nombreNuits = Number(heberg.metadata.nombre_nuits)
+    const devise      = folio.devise || heberg.devise || 'XAF'
+
+    const { detailTaxes } = calculerTaxes(tarifNuit, nombreNuits, await repo.trouverTaxesHebergement(hotelId, trx))
+    const voulues = Object.fromEntries(detailTaxes.filter(t => t.montant > 0).map(t => [t.code, t]))
+    const posees = {}
+    for (const l of actives) {
+      if (l.type_ligne === 'taxe' && l.metadata?.code) (posees[l.metadata.code] = posees[l.metadata.code] || []).push(l)
+    }
+
+    const cts = (v) => Math.round(Number(v || 0) * 100)
+    const ajustements = []
+    for (const code of new Set([...Object.keys(posees), ...Object.keys(voulues)])) {
+      const avant = (posees[code] || []).reduce((s, l) => s + cts(l.montant_total), 0)
+      const apres = voulues[code] ? cts(voulues[code].montant) : 0
+      if (avant === apres) continue
+      for (const l of posees[code] || []) {
+        await facturationRepo.insererLigne({
+          folio_id: folio.id, hotel_id: hotelId, type_ligne: 'correction', sens: 'credit',
+          montant: l.montant_total, devise: l.devise, description: `Réajustement fiscal — ${l.description}`,
+          reference_id: l.id, reference_type: 'folio_ligne', ligne_corrigee_id: l.id,
+          source_module: 'reservation', cree_par: acteurId || null, cree_par_type: 'staff',
+          metadata: { motif: 'reajustement_fiscal', code },
+        }, trx)
+      }
+      if (voulues[code]) {
+        await facturationRepo.insererLigne(ligneTaxe(folio.id, hotelId, voulues[code],
+          { tarifNuit, nombreNuits, devise, acteurId, acteurType: 'staff', motif: 'reajustement_fiscal' }), trx)
+      }
+      ajustements.push({ code, avant: avant / 100, apres: apres / 100 })
+    }
+    return ajustements
   }
 
   // ── Calcul de la remise online ─────────────────────────────────────────────
@@ -256,19 +318,8 @@ function createReservationsService({ db, cache }) {
           // P5 — Lignes taxes (une ligne débit par taxe active)
           for (const taxe of detailTaxes) {
             if (taxe.montant > 0) {
-              await facturationRepo.insererLigne({
-                folio_id:      folio.id,
-                hotel_id:      hotelId,
-                type_ligne:    'taxe',
-                sens:          'debit',
-                montant:       taxe.montant,
-                devise:        champs.devise,
-                description:   taxe.nom,
-                source_module: 'reservation',
-                cree_par:      acteurId || null,
-                cree_par_type: acteurType,
-                metadata:      { code: taxe.code },
-              }, trx)
+              await facturationRepo.insererLigne(ligneTaxe(folio.id, hotelId, taxe,
+                { tarifNuit, nombreNuits, devise: champs.devise, acteurId, acteurType }), trx)
             }
           }
 
@@ -613,6 +664,15 @@ function createReservationsService({ db, cache }) {
         if (folio) {
           if (folio.statut !== 'ouvert')
             throw new ConflictError(`Checkout impossible : folio déjà en statut "${folio.statut}"`, 'FOLIO_DEJA_FERME', { folio_id: folio.id })
+          const ajustements = await reajusterTaxesHebergement(trx, folio, hotelId, acteurId)
+          if (ajustements.length) {
+            await repo.insererLogAudit({
+              reservation_id: id, hotel_id: hotelId, action: 'reajustement_fiscal',
+              statut_avant: reservation.statut, statut_apres: reservation.statut,
+              acteur_id: acteurId || null, acteur_type: 'staff',
+              donnees_avant: JSON.stringify({ ajustements }),
+            }, trx)
+          }
           factureCreee = await _creerFactureCheckout({ trx, repo: facturationRepo, hotelId, reservationId: id, folio })
           folioApres   = await folioRegles.fermerAuCheckout(trx, folio.id, hotelId, acteurId)
         }

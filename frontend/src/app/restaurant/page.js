@@ -16,7 +16,7 @@ const MODE_PAIEMENT_L = { especes:'Espèces', carte:'Carte', mobile_money:'Mobil
 // ─── Emoji encodé en préfixe de description "[EMOJI] texte" ──────────────────
 function parseArticleEmoji(description) {
   if (!description) return { emoji: null, desc: '' }
-  const m = description.match(/^\[(.{1,2})\] (.*)/)
+  const m = description.match(/^\[(.{1,4}?)\] ?(.*)/s)   // emoji de 1 à 4 unités UTF-16 (ex. 🍽️ = 3)
   if (m) return { emoji: m[1], desc: m[2] }
   return { emoji: null, desc: description }
 }
@@ -703,101 +703,149 @@ function OngletPerformance() {
 }
 
 // ─── Onglet Menu (gestion articles) ───────────────────────────────────────
-const CATEGORIES_MENU = ['Petit-déjeuner', 'Entrées', 'Plats', 'Desserts', 'Boissons', 'Autre']
+// HELICONIA-RETOUR-01 : modification, (in)disponibilité, retrait du menu, catégorie Bar.
+// Liste chargée en mode gestion (indisponibles inclus) ; « Retirer » archive l'article
+// (jamais de suppression physique : commandes passées et stock le référencent).
+const CATEGORIES_MENU = ['Petit-déjeuner', 'Entrées', 'Plats', 'Desserts', 'Boissons', 'Bar', 'Autre']
+const ARTICLE_VIDE = { nom: '', prix: '', categorie: 'Plats', description: '', emoji: '' }
 
-function OngletMenu({ menu, onArticleCree }) {
+function OngletMenu({ onArticleCree }) {
+  const [articles, setArticles]   = useState([])
+  const [chargement, setChargement] = useState(true)
   const [showForm, setShowForm]   = useState(false)
+  const [edition, setEdition]     = useState(null)   // id de l'article modifié, null = création
   const [saving, setSaving]       = useState(false)
-  const [form, setForm]           = useState({ nom: '', prix: '', categorie: 'Plats', description: '', emoji: '' })
+  const [form, setForm]           = useState(ARTICLE_VIDE)
+
+  const charger = useCallback(async () => {
+    try {
+      const { data } = await restaurantAPI.menuGestion()
+      setArticles(data.articles || [])
+    } catch { toast.error('Erreur chargement du menu') }
+    finally { setChargement(false) }
+  }, [])
+  useEffect(() => { charger() }, [charger])
 
   function setF(k, v) { setForm(f => ({ ...f, [k]: v })) }
+  function apresMaj() { charger(); if (onArticleCree) onArticleCree() }
 
-  async function creer(e) {
+  function ouvrirCreation() { setEdition(null); setForm(ARTICLE_VIDE); setShowForm(true) }
+  function ouvrirEdition(a) {
+    const { emoji, desc } = parseArticleEmoji(a.description)
+    setEdition(a.id)
+    setForm({ nom: a.nom, prix: String(Number(a.prix)), categorie: a.categorie || 'Autre', description: desc || '', emoji: emoji || '' })
+    setShowForm(true)
+  }
+
+  async function enregistrer(e) {
     e.preventDefault()
-    if (!form.nom.trim() || !form.prix) return toast.error('Nom et prix requis')
+    if (!form.nom.trim() || form.prix === '') return toast.error('Nom et prix requis')
+    const corps = {
+      nom: form.nom.trim(), prix: parseFloat(form.prix), categorie: form.categorie,
+      description: form.description.trim(), emoji: form.emoji.trim(),
+    }
     setSaving(true)
     try {
-      await restaurantAPI.creerArticle({
-        nom:         form.nom.trim(),
-        prix:        parseFloat(form.prix),
-        categorie:   form.categorie,
-        description: form.description.trim() || undefined,
-        emoji:       form.emoji.trim() || undefined,
-      })
-      toast.success('Article ajouté au menu')
-      setForm({ nom: '', prix: '', categorie: 'Plats', description: '', emoji: '' })
-      setShowForm(false)
-      if (onArticleCree) onArticleCree()
+      if (edition) {
+        await restaurantAPI.modifierArticle(edition, corps)
+        toast.success('Article modifié')
+      } else {
+        await restaurantAPI.creerArticle({ ...corps, description: corps.description || undefined, emoji: corps.emoji || undefined })
+        toast.success('Article ajouté au menu')
+      }
+      setForm(ARTICLE_VIDE); setShowForm(false); setEdition(null)
+      apresMaj()
     } catch (e) {
-      toast.error(e?.response?.data?.erreur || 'Erreur création article')
+      toast.error(e?.response?.data?.erreur || 'Erreur enregistrement article')
     } finally { setSaving(false) }
   }
 
-  // Grouper articles par catégorie
-  const parCat = menu.reduce((acc, a) => {
+  async function basculerDispo(a) {
+    try {
+      await restaurantAPI.modifierArticle(a.id, { disponible: !a.disponible })
+      toast.success(a.disponible ? 'Article indisponible' : 'Article disponible')
+      apresMaj()
+    } catch (e) { toast.error(e?.response?.data?.erreur || 'Erreur') }
+  }
+
+  async function retirer(a) {
+    if (!window.confirm(`Retirer « ${a.nom} » du menu ?\nL'historique des commandes est conservé.`)) return
+    try {
+      await restaurantAPI.supprimerArticle(a.id)
+      toast.success('Article retiré du menu')
+      apresMaj()
+    } catch (e) { toast.error(e?.response?.data?.erreur || 'Erreur') }
+  }
+
+  // Grouper articles par catégorie (catégories connues d'abord, puis celles existantes en base)
+  const parCat = articles.reduce((acc, a) => {
     const k = a.categorie || 'Autre'
     if (!acc[k]) acc[k] = []
     acc[k].push(a)
     return acc
   }, {})
+  const categoriesForm = [...new Set([...CATEGORIES_MENU, ...Object.keys(parCat)])]
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div className="text-sm font-bold text-[var(--text-1)]">{menu.length} article{menu.length > 1 ? 's' : ''} au menu</div>
-        <button onClick={() => setShowForm(v => !v)} className="btn btn-primary btn-sm">
+        <div className="text-sm font-bold text-[var(--text-1)]">{articles.length} article{articles.length > 1 ? 's' : ''} au menu</div>
+        <button onClick={() => (showForm ? setShowForm(false) : ouvrirCreation())} className="btn btn-primary btn-sm">
           {showForm ? '✕ Annuler' : '＋ Nouvel article'}
         </button>
       </div>
 
       {showForm && (
-        <form onSubmit={creer} className="card p-4 space-y-3 border-blue-500/30">
-          <div className="text-xs font-bold text-[var(--text-1)] mb-1">Nouvel article</div>
+        <form onSubmit={enregistrer} className="card p-4 space-y-3 border-blue-500/30" data-testid="form-article">
+          <div className="text-xs font-bold text-[var(--text-1)] mb-1">{edition ? 'Modifier l\'article' : 'Nouvel article'}</div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="form-label">Emoji</label>
-              <input className="input text-center text-lg" maxLength={2} placeholder="🍽"
+              <input className="input text-center text-lg" maxLength={4} placeholder="🍽"
                 value={form.emoji} onChange={e => setF('emoji', e.target.value)} />
             </div>
             <div>
               <label className="form-label">Catégorie</label>
-              <select className="input" value={form.categorie} onChange={e => setF('categorie', e.target.value)}>
-                {CATEGORIES_MENU.map(c => <option key={c} value={c}>{c}</option>)}
+              <select className="input" name="categorie" value={form.categorie} onChange={e => setF('categorie', e.target.value)}>
+                {categoriesForm.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
           </div>
           <div>
             <label className="form-label">Nom de l'article *</label>
-            <input className="input" placeholder="ex: Entrecôte grillée" value={form.nom}
+            <input className="input" name="nom" placeholder="ex: Entrecôte grillée" value={form.nom}
               onChange={e => setF('nom', e.target.value)} required />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="form-label">Prix (XAF) *</label>
-              <input className="input" type="number" min="0" placeholder="0" value={form.prix}
+              <input className="input" name="prix" type="number" min="0" placeholder="0" value={form.prix}
                 onChange={e => setF('prix', e.target.value)} required />
             </div>
             <div>
               <label className="form-label">Description</label>
-              <input className="input" placeholder="Herbes fraîches, tomates…" value={form.description}
+              <input className="input" name="description" placeholder="Herbes fraîches, tomates…" value={form.description}
                 onChange={e => setF('description', e.target.value)} />
             </div>
           </div>
+          {edition && <div className="text-[10px] text-[var(--text-4)]">Le nouveau prix s'applique aux prochaines commandes ; les commandes passées gardent leur prix.</div>}
           <button type="submit" disabled={saving} className="btn btn-primary w-full btn-sm">
-            {saving ? '…' : 'Ajouter au menu →'}
+            {saving ? '…' : edition ? 'Enregistrer les modifications' : 'Ajouter au menu →'}
           </button>
         </form>
       )}
 
+      {chargement && <div className="skeleton h-16 rounded-lg" />}
+
       {/* Liste articles par catégorie */}
       {Object.entries(parCat).map(([cat, arts]) => (
         <div key={cat}>
-          <div className="text-xs font-bold text-[var(--text-3)] uppercase tracking-wider mb-2">{cat}</div>
+          <div className="text-xs font-bold text-[var(--text-3)] uppercase tracking-wider mb-2">{cat === 'Bar' ? '🍸 Bar' : cat}</div>
           <div className="space-y-1">
             {arts.map(a => {
               const { emoji, desc } = parseArticleEmoji(a.description)
               return (
-                <div key={a.id} className="card p-3 flex items-center gap-3">
+                <div key={a.id} className={`card p-3 flex items-center gap-3 ${a.disponible ? '' : 'opacity-60'}`} data-testid={`article-${a.nom}`}>
                   {emoji ? (
                     <span className="text-xl w-8 text-center flex-shrink-0">{emoji}</span>
                   ) : (
@@ -808,9 +856,12 @@ function OngletMenu({ menu, onArticleCree }) {
                     {desc && <div className="text-[10px] text-[var(--text-3)] truncate">{desc}</div>}
                   </div>
                   <div className="text-xs font-bold text-blue-400 flex-shrink-0">{fmt(a.prix, a.devise || 'XAF')}</div>
-                  <div className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${a.disponible ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                  <button onClick={() => basculerDispo(a)} title="Basculer la disponibilité"
+                    className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${a.disponible ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
                     {a.disponible ? 'Dispo' : 'Indispo'}
-                  </div>
+                  </button>
+                  <button onClick={() => ouvrirEdition(a)} className="btn btn-ghost btn-xs" title="Modifier">✏️</button>
+                  <button onClick={() => retirer(a)} className="btn btn-ghost btn-xs text-red-400" title="Retirer du menu">🗑</button>
                 </div>
               )
             })}
@@ -818,7 +869,7 @@ function OngletMenu({ menu, onArticleCree }) {
         </div>
       ))}
 
-      {menu.length === 0 && (
+      {!chargement && articles.length === 0 && (
         <div className="card p-10 text-center text-[var(--text-3)]">
           <div className="text-4xl mb-3 opacity-30">🍽</div>
           <div className="text-sm font-semibold">Aucun article au menu</div>
@@ -850,6 +901,10 @@ export default function RestaurantPage() {
   }, [])
 
   useEffect(() => { charger() }, [charger])
+  useEffect(() => {
+    const o = new URLSearchParams(window.location.search).get('onglet')
+    if (['salle', 'cuisine', 'performance', 'menu'].includes(o)) setOnglet(o)
+  }, [])
 
   // Auto-refresh salle toutes les 30s
   useEffect(() => {
@@ -908,7 +963,7 @@ export default function RestaurantPage() {
         ) : onglet === 'cuisine' ? (
           <OngletCuisine charger={charger} />
         ) : onglet === 'menu' ? (
-          <OngletMenu menu={menu} onArticleCree={charger} />
+          <OngletMenu onArticleCree={charger} />
         ) : (
           <OngletPerformance />
         )}

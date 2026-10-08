@@ -152,6 +152,9 @@ export const restaurantAPI = {
   creerCommande:  (data)  => api.post('/restaurant/commandes', data),
   changerStatut:  (id, d) => api.put(`/restaurant/commandes/${id}/statut`, d),
   creerArticle:   (data)  => api.post('/restaurant/articles', data),
+  menuGestion:    ()      => api.get('/restaurant/menu', { params: { gestion: 1 } }),
+  modifierArticle:(id, d) => api.put(`/restaurant/articles/${id}`, d),
+  supprimerArticle:(id)   => api.delete(`/restaurant/articles/${id}`),
   reservationsActives: () => api.get('/restaurant/reservations-actives'),
   performance:    (date)  => api.get('/restaurant/performance', { params: { date } }),
 }
@@ -288,6 +291,7 @@ export const caisseAPI = {
   cloturer:      (d)  => api.post('/caisse/cloturer', d),
   historique:    (p)  => api.get('/caisse/historique', { params: p }),
   detail:        (id) => api.get(`/caisse/${id}/detail`),
+  journee:       (id) => api.get(`/caisse/${id}/journee`),
 }
 
 export const chargesAPI = {

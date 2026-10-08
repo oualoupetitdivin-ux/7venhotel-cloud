@@ -32,7 +32,7 @@ module.exports = async function utilisateursRoutes(fastify) {
   fastify.get('/', { preHandler: pre }, async (req, reply) => {
     const users = await fastify.db('utilisateurs')
       .where({ tenant_id: req.tenantId })
-      .select('id', 'email', 'prenom', 'nom', 'role', 'actif', 'derniere_connexion', 'avatar_url', 'hotel_id')
+      .select('id', 'email', 'prenom', 'nom', 'role', 'actif', 'derniere_connexion', 'avatar_url', 'hotel_id', 'telephone', 'doit_changer_mdp')
       .orderBy('nom')
     reply.send({ utilisateurs: users })
   })
@@ -119,26 +119,56 @@ module.exports = async function utilisateursRoutes(fastify) {
       if (!h || (req.user.role !== 'super_admin' && h !== b.hotel_id)) return erreur(reply, 403, 'HOTEL_HORS_TENANT', "L'hôtel indiqué n'appartient pas à ce tenant")
       data.hotel_id = h
     }
-    if (b.mot_de_passe) {
-      if (String(b.mot_de_passe).length < 8) return erreur(reply, 400, 'MDP_TROP_COURT', 'Mot de passe : 8 caractères minimum')
-      data.mot_de_passe_hash = await fastify.hashMotDePasse(String(b.mot_de_passe))
+    // HELICONIA-RETOUR-01 — réinitialisation : mot de passe saisi, ou temporaire généré (affiché une fois)
+    let motDePasseTemporaire = null
+    if (b.mot_de_passe || b.generer_mot_de_passe) {
+      let mdp = b.mot_de_passe ? String(b.mot_de_passe) : null
+      if (mdp && mdp.length < 8) return erreur(reply, 400, 'MDP_TROP_COURT', 'Mot de passe : 8 caractères minimum')
+      if (!mdp) { mdp = crypto.randomBytes(9).toString('base64url'); motDePasseTemporaire = mdp }
+      data.mot_de_passe_hash = await fastify.hashMotDePasse(mdp)
       data.doit_changer_mdp = true
     }
+    // Son propre rôle / son propre accès ne se modifient pas depuis la gestion du personnel
+    // (un manager pourrait se rétrograder ou se désactiver et perdre l'administration de l'hôtel).
+    if (req.params.id === req.user.id && ((data.role && data.role !== req.user.role) || data.actif === false))
+      return erreur(reply, 409, 'AUTO_MODIFICATION', 'Vous ne pouvez pas modifier votre propre rôle ni désactiver votre propre compte')
     if (!Object.keys(data).length) return erreur(reply, 400, 'AUCUN_CHAMP', 'Aucun champ modifiable fourni')
 
     // Lecture avant modification pour audit diff
     const avant = await fastify.db('utilisateurs')
       .where({ id: req.params.id, tenant_id: req.tenantId })
-      .select('email', 'role', 'actif')
+      .select('email', 'role', 'actif', 'hotel_id', 'prenom', 'nom', 'telephone')
       .first()
     if (!avant) return reply.status(404).send({ erreur: 'Utilisateur introuvable' })
     // Un super_admin (compte plateforme) ne se modifie pas depuis la gestion du personnel
     if (avant.role === 'super_admin') return erreur(reply, 403, 'COMPTE_PLATEFORME', 'Compte plateforme non modifiable ici')
 
-    const [updated] = await fastify.db('utilisateurs')
-      .where({ id: req.params.id, tenant_id: req.tenantId })
-      .update(data)
-      .returning(COLONNES_PUBLIQUES)
+    let updated
+    try {
+      ;[updated] = await fastify.db('utilisateurs')
+        .where({ id: req.params.id, tenant_id: req.tenantId })
+        .update(data)
+        .returning(COLONNES_PUBLIQUES)
+    } catch (err) {
+      if (err.constraint === 'utilisateurs_tenant_id_email_key' || (err.message || '').includes('dupliquée')) {
+        return reply.status(409).send({ erreur: 'Cet email est déjà utilisé dans ce tenant', code: 'EMAIL_DUPLIQUE' })
+      }
+      throw err
+    }
+
+    // Le rôle et l'hôtel voyagent dans le JWT : un compte désactivé, changé de rôle/hôtel ou dont le
+    // mot de passe est réinitialisé garderait ses droits jusqu'à expiration du jeton. Ses sessions
+    // ouvertes sont révoquées (mécanisme de la déconnexion) → reconnexion avec les nouveaux droits.
+    const sensible = (data.role && data.role !== avant.role) || data.actif === false ||
+      (data.hotel_id && data.hotel_id !== avant.hotel_id) || !!data.mot_de_passe_hash
+    let sessionsRevoquees = 0
+    if (sensible) {
+      const jtis = await fastify.db('sessions_actives')
+        .where({ utilisateur_id: req.params.id }).whereNull('revoque_le').pluck('jti')
+      for (const jti of jtis) await fastify.revoquerSession(jti, req.tenantId)
+      await fastify.cache.del(`refresh:${req.params.id}`).catch(() => {})
+      sessionsRevoquees = jtis.length
+    }
 
     await fastify.db('logs_audit').insert({
       tenant_id: req.tenantId,
@@ -148,11 +178,12 @@ module.exports = async function utilisateursRoutes(fastify) {
       ressource_type: 'utilisateur',
       ressource_id: req.params.id,
       anciennes_valeurs: JSON.stringify(avant),
-      nouvelles_valeurs: JSON.stringify({ role: data.role, actif: data.actif }),
+      nouvelles_valeurs: JSON.stringify({ ...Object.fromEntries(Object.entries(data).filter(([k]) => k !== 'mot_de_passe_hash')),
+        mot_de_passe_reinitialise: !!data.mot_de_passe_hash, sessions_revoquees: sessionsRevoquees }),
       ip_address: req.ip,
     }).catch(() => {})
 
-    reply.send({ message: 'Utilisateur mis à jour', utilisateur: updated })
+    reply.send({ message: 'Utilisateur mis à jour', utilisateur: updated, sessions_revoquees: sessionsRevoquees, mot_de_passe_temporaire: motDePasseTemporaire })
   })
 
   fastify.delete('/:id', { preHandler: pre }, async (req, reply) => {
@@ -167,6 +198,9 @@ module.exports = async function utilisateursRoutes(fastify) {
     await fastify.db('utilisateurs')
       .where({ id: req.params.id, tenant_id: req.tenantId })
       .update({ actif: false })
+    for (const jti of await fastify.db('sessions_actives').where({ utilisateur_id: req.params.id }).whereNull('revoque_le').pluck('jti'))
+      await fastify.revoquerSession(jti, req.tenantId)
+    await fastify.cache.del(`refresh:${req.params.id}`).catch(() => {})
 
     await fastify.db('logs_audit').insert({
       tenant_id: req.tenantId,

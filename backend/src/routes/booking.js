@@ -82,6 +82,8 @@ module.exports = async function bookingRoutes(fastify) {
         'tc.capacite_adultes', 'tc.superficie_m2', 'tc.amenagements', 'tc.photos AS type_photos',
         fastify.db.raw(`COALESCE((SELECT json_agg(url_fichier ORDER BY ordre) FROM images_chambres WHERE chambre_id = ch.id), '[]'::json) AS room_photos`)
       )
+      // Ordre stable (sans ORDER BY, l'ordre physique PostgreSQL variait d'un appel à l'autre)
+      .orderBy('ch.numero')
 
     // P8.1 — Taxes hébergement de l'hôtel pour que le frontend calcule le vrai total
     const taxes = await fastify.db('taxes')

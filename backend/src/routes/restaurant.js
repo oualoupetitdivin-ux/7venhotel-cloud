@@ -12,10 +12,12 @@ module.exports = async function restaurantRoutes(fastify) {
   const preModif  = [...pre, fastify.verifierPermission('restaurant.modifier')]
 
   // ── GET /menu ──────────────────────────────────────────────────────────────
+  // Articles actifs (un article archivé — supprimé du menu — n'apparaît plus, y compris quand il a
+  // été archivé depuis le Catalogue). ?gestion=1 : inclut les indisponibles (onglet Menu : réactivation).
   fastify.get('/menu', { preHandler: preRead }, async (req, reply) => {
-    const menu = await fastify.db('articles_menu')
-      .where({ hotel_id: req.hotelId, disponible: true })
-      .orderBy('categorie').orderBy('ordre')
+    let q = fastify.db('articles_menu').where({ hotel_id: req.hotelId, actif: true })
+    if (!req.query?.gestion) q = q.where({ disponible: true })
+    const menu = await q.orderBy('categorie').orderBy('ordre').orderBy('nom')
     const parCategorie = menu.reduce((acc, a) => {
       if (!acc[a.categorie]) acc[a.categorie] = []
       acc[a.categorie].push(a)
@@ -48,6 +50,48 @@ module.exports = async function restaurantRoutes(fastify) {
       })
       .returning('*')
     return reply.status(201).send({ article })
+  })
+
+  // ── PUT /articles/:id — Modifier un article du menu (HELICONIA-RETOUR-01) ───
+  // Champs autorisés uniquement. Le prix modifié vaut pour les commandes FUTURES : les lignes de
+  // commande existantes portent leur propre prix (snapshot) et ne changent pas.
+  fastify.put('/articles/:id', { preHandler: preModif }, async (req, reply) => {
+    const b = req.body || {}
+    const article = await fastify.db('articles_menu').where({ id: req.params.id, hotel_id: req.hotelId, actif: true }).first()
+    if (!article) return reply.status(404).send({ erreur: 'Article introuvable', code: 'ARTICLE_INTROUVABLE' })
+    const maj = {}
+    if (b.nom !== undefined) { if (!String(b.nom).trim()) return reply.status(400).send({ erreur: 'Nom requis', code: 'CHAMPS_MANQUANTS' }); maj.nom = String(b.nom).trim() }
+    if (b.prix !== undefined) {
+      const p = parseFloat(b.prix)
+      if (!(p >= 0)) return reply.status(400).send({ erreur: 'Prix invalide', code: 'PRIX_INVALIDE' })
+      maj.prix = p
+    }
+    if (b.categorie !== undefined) { if (!String(b.categorie).trim()) return reply.status(400).send({ erreur: 'Catégorie requise', code: 'CHAMPS_MANQUANTS' }); maj.categorie = String(b.categorie).trim() }
+    if (b.description !== undefined || b.emoji !== undefined) {
+      const ancien = String(article.description || '').match(/^\[(.+?)\]\s?(.*)$/s)
+      const emoji = b.emoji !== undefined ? String(b.emoji || '').trim() : (ancien ? ancien[1] : '')
+      const desc  = b.description !== undefined ? String(b.description || '').trim() : (ancien ? ancien[2] : String(article.description || ''))
+      maj.description = emoji ? `[${emoji}] ${desc}` : (desc || null)
+    }
+    if (b.ordre !== undefined) maj.ordre = parseInt(b.ordre) || 0
+    if (b.disponible !== undefined) maj.disponible = !!b.disponible
+    if (!Object.keys(maj).length) return reply.status(400).send({ erreur: 'Aucun champ modifiable fourni', code: 'AUCUN_CHAMP' })
+    const [maj2] = await fastify.db('articles_menu').where({ id: article.id, hotel_id: req.hotelId }).update(maj).returning('*')
+    return reply.send({ message: 'Article modifié', article: maj2 })
+  })
+
+  // ── DELETE /articles/:id — Retirer un article du menu ─────────────────────
+  // Jamais de suppression physique : les commandes passées (lignes_commande.article_id), le stock
+  // et les statistiques référencent l'article. Il est archivé (actif = false) et disparaît du menu,
+  // de la prise de commande et du catalogue actif ; l'historique reste intact.
+  fastify.delete('/articles/:id', { preHandler: preModif }, async (req, reply) => {
+    const [article] = await fastify.db('articles_menu')
+      .where({ id: req.params.id, hotel_id: req.hotelId, actif: true })
+      .update({ actif: false, disponible: false })
+      .returning('*')
+    if (!article) return reply.status(404).send({ erreur: 'Article introuvable', code: 'ARTICLE_INTROUVABLE' })
+    const [{ n }] = await fastify.db('lignes_commande').where({ article_id: article.id }).count('id AS n')
+    return reply.send({ message: 'Article retiré du menu', article, commandes_historiques: Number(n) })
   })
 
   // ── GET /commandes ─────────────────────────────────────────────────────────
@@ -214,7 +258,7 @@ module.exports = async function restaurantRoutes(fastify) {
           .whereIn('s_applique_a', ['restaurant', 'tout'])
           .orderBy('ordre')
         const detailTaxes = taxesActives.map(t => ({
-          code: t.code, nom: t.nom,
+          code: t.code, nom: t.nom, type_taxe: t.type_taxe, valeur: Number(t.valeur),
           montant: Math.round((t.type_taxe === 'pourcentage' ? montant * Number(t.valeur) / 100 : Number(t.valeur)) * 100) / 100,
         })).filter(t => t.montant > 0)
         const totalTaxes = Math.round(detailTaxes.reduce((x, t) => x + t.montant, 0) * 100) / 100
@@ -230,7 +274,7 @@ module.exports = async function restaurantRoutes(fastify) {
               description: `${t.nom} — ${commandeAvant.numero_commande}`,
               reference_id: commandeAvant.id, reference_type: 'commande_restaurant', source_module: 'restaurant',
               cree_par: req.user.id || null, cree_par_type: 'staff',
-              metadata: JSON.stringify({ code: t.code, numero_commande: commandeAvant.numero_commande }),
+              metadata: JSON.stringify({ code: t.code, type_taxe: t.type_taxe, valeur: t.valeur, numero_commande: commandeAvant.numero_commande }),
             })
           }
         }

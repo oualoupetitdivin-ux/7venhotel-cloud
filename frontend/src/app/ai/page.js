@@ -66,7 +66,8 @@ export default function AIPage() {
       const { data } = await aiAPI.chat({ message: msg, historique })
       setMessages(prev => [...prev, { role: 'ai', content: data.reponse }])
     } catch (err) {
-      const msg503 = '⚠️ **Service IA indisponible.** Vérifiez que la clé ANTHROPIC_API_KEY est configurée dans votre fichier `.env`.'
+      // Cause exacte renvoyée par le serveur (crédit fournisseur épuisé, clé refusée, surcharge…)
+      const msg503 = `⚠️ **Service IA indisponible.** ${err.response?.data?.message || 'Le fournisseur IA ne répond pas.'}`
       const msgErr = '❌ Erreur de communication avec Ouwalou. Veuillez réessayer.'
       setMessages(prev => [...prev, { role: 'ai', content: err.response?.status === 503 ? msg503 : msgErr }])
     } finally { setLoading(false) }

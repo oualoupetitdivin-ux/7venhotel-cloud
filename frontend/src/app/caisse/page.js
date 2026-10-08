@@ -120,9 +120,87 @@ function ModalMouvement({ onClose, onSuccess }) {
   )
 }
 
+// Rubriques du théorique telles que calculées par le backend (GET /caisse/session-active →
+// detail_theorique) : la clôture compare le compté à CE théorique. Le recalcul local
+// « fond + encaissements » ignorait les décaissements → écart fantôme (ex. Heliconia 08/10 : +2 000).
+function rubriquesTheorique(d = {}) {
+  return [
+    ['Fond initial',                   Number(d.fond_ouverture || 0),               1],
+    ['Encaissements espèces',          Number(d.encaissements_paiements || 0),      1],
+    ['Arrhes reçues en espèces',       Number(d.encaissements_arrhes || 0),         1],
+    ['Décaissements / retraits',       Number(d.sorties_mouvements || 0),          -1],
+    ['Remboursements d\'arrhes',       Number(d.remboursements_arrhes || 0),       -1],
+    ['Paiements espèces annulés',      Number(d.contre_passations_paiements || 0), -1],
+  ].filter(([label, m], i) => i < 2 || m !== 0)
+}
+
+const echapper = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+const MODES = { especes: 'Espèces', carte: 'Carte bancaire', mobile_money: 'Mobile Money', virement: 'Virement', cheque: 'Chèque', cinetpay: 'CinetPay', autre: 'Autre' }
+
+// ── Impression de la journée de caisse (navigateur → imprimante ou PDF) ──────
+// La fenêtre est ouverte AVANT l'appel API (sinon bloquée comme popup), puis remplie.
+async function imprimerJournee(sessionId) {
+  const w = window.open('', '_blank', 'width=900,height=1000')
+  if (!w) return toast.error('Autorisez les fenêtres pop-up pour imprimer')
+  w.document.write('<p style="font-family:sans-serif;padding:24px">Préparation de la journée de caisse…</p>')
+  try {
+    const { data: j } = await caisseAPI.journee(sessionId)
+    const s = j.session
+    const f = (m) => echapper(fmt(m, 'XAF'))
+    const dt = (d) => d ? echapper(new Date(d).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })) : '—'
+    const ligne = (cells, cls = '') => `<tr class="${cls}">${cells.map((c, i) => `<td${i === cells.length - 1 ? ' class="r"' : ''}>${c}</td>`).join('')}</tr>`
+    const rub = rubriquesTheorique(j.detail_theorique)
+    const encaiss = [...j.encaissements.map(e => ({ ...e, libelle: `${e.nom_client}${e.numero_folio ? ' · ' + e.numero_folio : ''}` })),
+                     ...j.arrhes.map(a => ({ ...a, libelle: `Arrhes${a.numero_folio ? ' · ' + a.numero_folio : ''}` }))]
+      .sort((a, b) => new Date(a.date) - new Date(b.date))
+    const ecart = s.statut === 'cloturee' ? Number(s.ecart) : null
+    w.document.open()
+    w.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Journée de caisse — ${echapper(s.hotel_nom)}</title>
+<style>
+  body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:28px;font-size:12px}
+  h1{font-size:18px;margin:0} h2{font-size:13px;margin:22px 0 6px;text-transform:uppercase;letter-spacing:.04em;color:#444}
+  .meta{color:#555;margin-top:4px} table{width:100%;border-collapse:collapse} td,th{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left}
+  th{font-size:11px;color:#555;background:#f4f4f4} .r{text-align:right;white-space:nowrap} .tot td{font-weight:bold;border-top:2px solid #111}
+  .neg{color:#b00020} .box{display:flex;gap:12px;margin-top:10px} .box div{flex:1;border:1px solid #ccc;border-radius:6px;padding:8px}
+  .box b{display:block;font-size:15px;margin-top:3px} .sig{display:flex;gap:40px;margin-top:40px} .sig div{flex:1;border-top:1px solid #999;padding-top:4px;color:#555}
+  .noprint{margin-bottom:16px} @media print{.noprint{display:none} body{margin:12mm}}
+</style></head><body>
+<div class="noprint"><button onclick="window.print()">🖨 Imprimer / Enregistrer en PDF</button></div>
+<h1>Journée de caisse — ${echapper(s.hotel_nom)}</h1>
+<div class="meta">Ouverte le ${dt(s.ouverte_le)}${s.ouverte_par_nom ? ' par ' + echapper(s.ouverte_par_nom) : ''} ·
+${s.statut === 'cloturee' ? `Clôturée le ${dt(s.fermee_le)}${s.fermee_par_nom ? ' par ' + echapper(s.fermee_par_nom) : ''}` : `<b>Session en cours</b> (situation au ${dt(j.fin)})`}</div>
+<div class="box"><div>Théorique espèces<b>${f(j.theorique)}</b></div>
+<div>Compté<b>${s.statut === 'cloturee' ? f(s.montant_compte) : '—'}</b></div>
+<div>Écart<b class="${ecart ? 'neg' : ''}">${ecart === null ? '—' : (ecart > 0 ? '+' : '') + f(ecart)}</b></div>
+<div>Total encaissé (tous modes)<b>${f(j.total_encaisse)}</b></div></div>
+<h2>Calcul du théorique espèces</h2><table>
+${rub.map(([l, m, signe]) => ligne([echapper(l), (signe < 0 ? '−' : '+') + ' ' + f(m)], signe < 0 ? 'neg' : '')).join('')}
+${ligne(['Total théorique', f(j.theorique)], 'tot')}</table>
+<h2>Encaissements par mode</h2><table><tr><th>Mode</th><th class="r">Montant</th></tr>
+${Object.entries(j.par_mode).map(([m, v]) => ligne([echapper(MODES[m] || m), f(v)])).join('') || ligne(['Aucun encaissement', '—'])}
+${ligne(['Total', f(j.total_encaisse)], 'tot')}</table>
+<h2>Détail des encaissements</h2><table><tr><th>Date</th><th>Mode</th><th>Client / folio</th><th class="r">Montant</th></tr>
+${encaiss.map(e => ligne([dt(e.date), echapper(MODES[e.type_paiement] || e.type_paiement), echapper(e.libelle), f(e.montant)])).join('') || ligne(['—', '', 'Aucun encaissement', '—'])}</table>
+${j.en_attente?.length ? `<h2>Paiements en attente de confirmation (non comptés)</h2><table><tr><th>Date</th><th>Mode</th><th>Folio</th><th class="r">Montant</th></tr>
+${j.en_attente.map(e => ligne([dt(e.date), echapper(MODES[e.type_paiement] || e.type_paiement), echapper(e.numero_folio || '—'), f(e.montant)])).join('')}</table>` : ''}
+<h2>Mouvements de caisse</h2><table><tr><th>Date</th><th>Type</th><th>Libellé</th><th class="r">Montant</th></tr>
+${j.mouvements.map(m => { const meta = TYPE_MOUVEMENT_META[m.type_mouvement] || TYPE_MOUVEMENT_META.decaissement
+  return ligne([dt(m.cree_le), echapper(meta.label), echapper(m.libelle || '—') + (m.reference ? ' (' + echapper(m.reference) + ')' : ''), (meta.signe > 0 ? '+' : '−') + ' ' + f(m.montant)], meta.signe < 0 ? 'neg' : '') }).join('')}</table>
+${s.notes_cloture ? `<h2>Notes de clôture</h2><div>${echapper(s.notes_cloture)}</div>` : ''}
+<div class="sig"><div>Caissier</div><div>Responsable</div></div>
+<script>window.onload=function(){setTimeout(function(){window.print()},300)}</script>
+</body></html>`)
+    w.document.close()
+  } catch (e) {
+    w.close()
+    toast.error(e?.response?.data?.erreur || 'Impossible de préparer la journée de caisse')
+  }
+}
+
 // ── Modal : clôturer la caisse ───────────────────────────────────────────────
-function ModalCloturer({ session, encaissementsEspeces, onClose, onSuccess }) {
-  const theorique = Number(session.fond_ouverture) + encaissementsEspeces
+function ModalCloturer({ session, onClose, onSuccess }) {
+  const theorique = Number(session.total_theorique)
+  const rubriques = rubriquesTheorique(session.detail_theorique)
   const [montantCompte, setMontantCompte] = useState('')
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
@@ -152,8 +230,12 @@ function ModalCloturer({ session, encaissementsEspeces, onClose, onSuccess }) {
         <form onSubmit={submit}>
           <div className="modal-body space-y-3">
             <div className="bg-[var(--bg-3)] rounded-xl p-3 text-xs space-y-1">
-              <div className="flex justify-between"><span className="text-[var(--text-3)]">Fond initial</span><span>{fmt(session.fond_ouverture, 'XAF')}</span></div>
-              <div className="flex justify-between"><span className="text-[var(--text-3)]">Encaissements espèces</span><span className="text-emerald-400">{fmt(encaissementsEspeces, 'XAF')}</span></div>
+              {rubriques.map(([label, montant, signe]) => (
+                <div key={label} className="flex justify-between">
+                  <span className="text-[var(--text-3)]">{label}</span>
+                  <span className={signe < 0 ? 'text-red-400' : label === 'Fond initial' ? '' : 'text-emerald-400'}>{signe < 0 ? '−' : ''}{fmt(montant, 'XAF')}</span>
+                </div>
+              ))}
               <div className="flex justify-between font-bold"><span className="text-[var(--text-1)]">Total théorique</span><span className="text-[var(--text-1)]">{fmt(theorique, 'XAF')}</span></div>
             </div>
             <div>
@@ -215,7 +297,7 @@ function OngletHistorique() {
             <tr>
               <th>Ouverte le</th><th>Clôturée le</th><th className="text-right">Fond</th>
               <th className="text-right">Théorique</th><th className="text-right">Compté</th>
-              <th className="text-right">Écart</th>
+              <th className="text-right">Écart</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -230,6 +312,7 @@ function OngletHistorique() {
                   <td className="text-right">{fmt(s.montant_theorique, 'XAF')}</td>
                   <td className="text-right">{fmt(s.montant_compte, 'XAF')}</td>
                   <td className={`text-right font-bold ${ecartCls}`}>{ecart > 0 ? '+' : ''}{fmt(ecart, 'XAF')}</td>
+                  <td className="text-right"><button onClick={() => imprimerJournee(s.id)} className="btn btn-ghost btn-xs" title="Imprimer la journée">🖨</button></td>
                 </tr>
               )
             })}
@@ -320,7 +403,7 @@ export default function CaissePage() {
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div className="kpi-card">
                   <div className="kpi-label">Fond initial</div>
                   <div className="kpi-value text-blue-400">{fmt(session.fond_ouverture, 'XAF')}</div>
@@ -331,6 +414,11 @@ export default function CaissePage() {
                   <div className="kpi-value text-emerald-400">{fmt(session.encaissements_especes, 'XAF')}</div>
                 </div>
                 <div className="kpi-card">
+                  <div className="kpi-label">Sorties espèces</div>
+                  <div className="kpi-value text-red-400">−{fmt((session.detail_theorique?.sorties_mouvements || 0) + (session.detail_theorique?.remboursements_arrhes || 0) + (session.detail_theorique?.contre_passations_paiements || 0), 'XAF')}</div>
+                  <div className="text-[9px] text-[var(--text-4)] mt-0.5">Décaissements, retraits, remboursements</div>
+                </div>
+                <div className="kpi-card">
                   <div className="kpi-label">Total théorique</div>
                   <div className="kpi-value text-[var(--text-0)]">{fmt(session.total_theorique, 'XAF')}</div>
                 </div>
@@ -339,6 +427,7 @@ export default function CaissePage() {
               <div className="flex items-center gap-2 flex-wrap">
                 <div className="flex-1" />
                 <button onClick={charger} className="btn btn-ghost btn-sm text-xs">↻</button>
+                <button onClick={() => imprimerJournee(session.id)} className="btn btn-ghost btn-sm text-xs">🖨 Imprimer la journée</button>
                 {peutOuvrirOuMouvementer && (
                   <button onClick={() => setModalMouvement(true)} className="btn btn-ghost btn-sm text-xs">↘ Décaissement / Retrait</button>
                 )}
@@ -385,7 +474,7 @@ export default function CaissePage() {
       {modalOuvrir && <ModalOuvrir onClose={() => setModalOuvrir(false)} onSuccess={onSuccess} />}
       {modalMouvement && <ModalMouvement onClose={() => setModalMouvement(false)} onSuccess={onSuccess} />}
       {modalCloturer && session && (
-        <ModalCloturer session={session} encaissementsEspeces={session.encaissements_especes}
+        <ModalCloturer session={session}
           onClose={() => setModalCloturer(false)} onSuccess={onSuccess} />
       )}
     </AppLayout>

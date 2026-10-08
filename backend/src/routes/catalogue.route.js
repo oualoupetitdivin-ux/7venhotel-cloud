@@ -1,4 +1,9 @@
 'use strict'
+// HELICONIA-RETOUR-01 — colonnes modifiables (le corps était appliqué tel quel : hotel_id réécrivable)
+const CHAMPS_ARTICLE   = ['nom', 'description', 'prix', 'categorie', 'categorie_id', 'disponible', 'image_url', 'ordre', 'unite', 'stock_minimum', 'cout_revient', 'actif']
+const CHAMPS_CATEGORIE = ['nom', 'ordre', 'actif', 'icone']
+const filtrer = (corps, champs) => Object.fromEntries(Object.entries(corps || {}).filter(([k]) => champs.includes(k)))
+
 module.exports = async function catalogueRoutes(fastify) {
   const pre     = [fastify.authentifier, fastify.contexteHotel]
   const preAcces = [...pre, fastify.verifierRole(['manager', 'restaurant'])]
@@ -14,7 +19,7 @@ module.exports = async function catalogueRoutes(fastify) {
 
   fastify.post('/categories', { preHandler: preAcces }, async (req, reply) => {
     const [categorie] = await fastify.db('categories_menu').insert({
-      ...req.body, hotel_id: req.hotelId
+      ...filtrer(req.body, CHAMPS_CATEGORIE), hotel_id: req.hotelId
     }).returning('*')
     reply.status(201).send({ message: 'Catégorie créée', categorie })
   })
@@ -22,7 +27,7 @@ module.exports = async function catalogueRoutes(fastify) {
   fastify.put('/categories/:id', { preHandler: preAcces }, async (req, reply) => {
     const [categorie] = await fastify.db('categories_menu')
       .where({ id: req.params.id, hotel_id: req.hotelId })
-      .update(req.body)
+      .update(filtrer(req.body, CHAMPS_CATEGORIE))
       .returning('*')
     if (!categorie) return reply.status(404).send({ erreur: 'Catégorie introuvable' })
     reply.send({ message: 'Catégorie modifiée', categorie })
@@ -69,13 +74,13 @@ module.exports = async function catalogueRoutes(fastify) {
   fastify.post('/articles', { preHandler: preAcces }, async (req, reply) => {
     const categorie = req.body.categorie || await resoudreCategorieLegacy(req, req.body.categorie_id)
     const [article] = await fastify.db('articles_menu').insert({
-      ...req.body, categorie, hotel_id: req.hotelId
+      ...filtrer(req.body, CHAMPS_ARTICLE), categorie, hotel_id: req.hotelId
     }).returning('*')
     reply.status(201).send({ message: 'Article créé', article })
   })
 
   fastify.put('/articles/:id', { preHandler: preAcces }, async (req, reply) => {
-    const updates = { ...req.body }
+    const updates = filtrer(req.body, CHAMPS_ARTICLE)
     if (!updates.categorie && 'categorie_id' in updates)
       updates.categorie = await resoudreCategorieLegacy(req, updates.categorie_id)
 

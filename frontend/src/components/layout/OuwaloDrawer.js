@@ -63,7 +63,7 @@ export default function OuwaloDrawer({ open, onClose }) {
       if (status === 401 || status === 403)
         errMsg = '🔒 Session expirée. **Reconnectez-vous** pour utiliser l\'assistant.'
       else if (status === 503)
-        errMsg = '⚠️ **Service IA temporairement indisponible.** Vérifiez la clé ANTHROPIC_API_KEY.'
+        errMsg = `⚠️ **Service IA indisponible.** ${err?.response?.data?.message || 'Le fournisseur IA ne répond pas.'}`
       setMessages(prev => [...prev, { role: 'ai', content: errMsg }])
     } finally { setLoading(false) }
   }, [messages, input, loading])

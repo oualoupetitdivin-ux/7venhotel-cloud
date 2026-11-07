@@ -36,6 +36,9 @@
     /* ── Surfaces spéciales ────────────────────────────────── */
     --topbar-bg:  rgba(11,15,26,.90);
     --sidebar-bg: #0B0F1A;
+
+    /* ── Icône native des champs date (noire par défaut) ───── */
+    --date-icon-filter: invert(1);
   }
 
   .light {
@@ -62,6 +65,8 @@
 
     --topbar-bg:  rgba(255,255,255,.93);
     --sidebar-bg: #FFFFFF;
+
+    --date-icon-filter: none;
   }
 
   html {
@@ -81,6 +86,26 @@
   ::-webkit-scrollbar { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 99px; }
+
+  /* Icône calendrier : marges négatives pour ne pas grandir le champ par rapport à ses voisins.
+     Le fond de survol est noir et suit le filtre : il ressort aussi en clair sur thème sombre. */
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+    box-sizing: border-box;
+    width: 20px;
+    height: 20px;
+    margin-block: -4px;
+    padding: 1px;
+    border-radius: 4px;
+    opacity: 1;
+    cursor: pointer;
+    filter: var(--date-icon-filter);
+    transition: background-color 120ms ease;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator:hover,
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+    background-color: rgba(0,0,0,.14);
+  }
 }
 
 @layer components {
@@ -89,7 +114,7 @@
      NAVIGATION LATÉRALE
   ───────────────────────────────────────────────────────── */
   .sidebar-nav-item {
-    @apply flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-medium
+    @apply flex items-center gap-2 px-2 py-1.5 rounded-md text-[12.5px] leading-[18px] font-medium
            text-[var(--text-2)] cursor-pointer no-underline;
     transition: background 140ms ease, color 140ms ease, transform 140ms ease;
   }
@@ -212,6 +237,9 @@
            px-3.5 py-2 text-left;
     background: var(--bg-2);
   }
+  /* .table-base th (0,1,1) l'emporte sur les utilitaires (0,1,0) : l'en-tête resterait à gauche de sa colonne. */
+  .table-base th.text-right  { text-align: right; }
+  .table-base th.text-center { text-align: center; }
   .table-base td {
     @apply px-3.5 py-2.5 text-[var(--text-0)];
     border-bottom: 1px solid var(--border-0);

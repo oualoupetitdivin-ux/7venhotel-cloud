@@ -225,8 +225,10 @@ export default function NouvelleReservationPage() {
                     onChange={e => setForm(f => ({...f, source: e.target.value}))}>
                     <option value="direct">Direct</option>
                     <option value="telephone">Téléphone</option>
+                    <option value="whatsapp">WhatsApp</option>
+                    <option value="agence">Agence de voyage</option>
+                    <option value="email">E-mail</option>
                     <option value="ota">OTA (Booking.com, Expedia…)</option>
-                    <option value="reception">Réception</option>
                   </select>
                 </div>
                 <div>

@@ -237,12 +237,14 @@ module.exports = async function facturationRoutes(fastify) {
         const [reservation, folio, hotel] = await Promise.all([
           db('reservations AS r')
             .leftJoin('clients AS c', 'c.id', 'r.client_id')
+            .leftJoin('chambres AS ch', 'ch.id', 'r.chambre_id')
             .where({ 'r.id': reservationId, 'r.hotel_id': hotelId })
             .select(
               'r.*',
               db.raw("c.prenom || ' ' || c.nom AS nom_client"),
               'c.email AS email_client',
-              'c.telephone AS telephone_client'
+              'c.telephone AS telephone_client',
+              'ch.numero AS numero_chambre'
             )
             .first(),
           db('folios').where({ reservation_id: reservationId, hotel_id: hotelId }).first(),

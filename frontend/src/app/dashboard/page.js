@@ -28,6 +28,15 @@ function getChartOpts() {
 }
 const CHART_OPTS = getChartOpts()
 
+// Date du jour à Douala (toISOString donnerait la date UTC, décalée entre minuit et 1h)
+function dateDuJourDouala() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Africa/Douala', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(new Date())
+  const val = type => parts.find(p => p.type === type).value
+  return `${val('year')}-${val('month')}-${val('day')}`
+}
+
 export default function DashboardPage() {
   const router = useRouter()
   const hotel  = useAuthStore(s => s.hotel)
@@ -48,21 +57,23 @@ export default function DashboardPage() {
 
   async function charger() {
     try {
-      const today = new Date().toISOString().split('T')[0]
+      const today = dateDuJourDouala()
       const [kpiRes, quotRes, mensRes, arrRes, depRes, opsRes, aiRes] = await Promise.allSettled([
         analyticsAPI.dashboard(),
         analyticsAPI.quotidiennes({ jours: 7 }),
         analyticsAPI.mensuelles(),
-        reservationsAPI.lister({ statut: 'confirmee', date_debut: today, date_fin: today }),
-        reservationsAPI.lister({ statut: 'arrivee', date_fin: today }),
+        // Mêmes définitions que les KPI arrivees_aujourd_hui / departs_aujourd_hui (analytics.js)
+        reservationsAPI.lister({ statuts: 'confirmee,arrivee', arrivee_le: today, limite: 200 }),
+        reservationsAPI.lister({ statuts: 'arrivee,depart_aujourd_hui', depart_le: today, limite: 200 }),
         reservationsAPI.alertes(),
         aiAPI.alertes()
       ])
       if (kpiRes.status === 'fulfilled') setKpis(kpiRes.value.data)
       if (quotRes.status === 'fulfilled') setQuotidien(quotRes.value.data)
       if (mensRes.status === 'fulfilled') setMensuel(mensRes.value.data)
-      if (arrRes.status === 'fulfilled') setArrivees(arrRes.value.data.data?.slice(0, 8) || [])
-      if (depRes.status === 'fulfilled') setDeparts(depRes.value.data.data?.slice(0, 8) || [])
+      // Liste complète (panneau défilant) : le badge doit égaler le KPI, sans tronquer à 8
+      if (arrRes.status === 'fulfilled') setArrivees(arrRes.value.data.data || [])
+      if (depRes.status === 'fulfilled') setDeparts(depRes.value.data.data || [])
 
       // Alertes : opérationnelles (déterministes) en premier, IA ensuite
       const opsAlertes = opsRes.status === 'fulfilled' ? (opsRes.value.data.alertes || []) : []

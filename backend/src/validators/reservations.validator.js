@@ -8,7 +8,7 @@
 // Retourne { ok: true } ou { ok: false, erreurs: [{ champ, message }] }
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SOURCES_VALIDES   = ['online', 'reception', 'telephone', 'ota', 'direct']
+const SOURCES_VALIDES   = ['online', 'reception', 'telephone', 'whatsapp', 'agence', 'email', 'ota', 'direct']
 const REGIMES_VALIDES   = ['chambre_seule', 'bb', 'demi_pension', 'pension_complete']
 const STATUTS_ANNULABLES = ['tentative', 'confirmee']
 

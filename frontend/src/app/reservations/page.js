@@ -52,7 +52,12 @@ export default function ReservationsPage() {
     try {
       const { data: res } = await reservationsAPI.checkin(id)
       toast.success('Check-in effectué !')
-      if (res?.token_portail) setPortailApresCheckin({ url: `${window.location.origin}/room-portal/${res.token_portail}` })
+      if (res?.token_portail) setPortailApresCheckin({
+        url: `${window.location.origin}/room-portal/${res.token_portail}`,
+        numeroChambre: r?.numero_chambre,
+        dateArrivee:   r?.date_arrivee,
+        dateDepart:    r?.date_depart,
+      })
       await charger()
     } catch (err) {
       toast.error(err?.response?.data?.erreur || 'Erreur check-in')
@@ -163,7 +168,13 @@ export default function ReservationsPage() {
   return (
     <AppLayout titre="Réservations" sousTitre="Gestion des réservations">
       {portailApresCheckin && (
-        <PortailModal urlPortail={portailApresCheckin.url} onClose={() => setPortailApresCheckin(null)} />
+        <PortailModal
+          urlPortail={portailApresCheckin.url}
+          numeroChambre={portailApresCheckin.numeroChambre}
+          dateArrivee={portailApresCheckin.dateArrivee}
+          dateDepart={portailApresCheckin.dateDepart}
+          onClose={() => setPortailApresCheckin(null)}
+        />
       )}
       <div className="space-y-5">
         {/* En-tête */}

@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams }   from 'next/navigation'
 import Link            from 'next/link'
 import AppLayout       from '@/components/layout/AppLayout'
@@ -16,6 +16,26 @@ const STATUT_LABEL = {
   annulee:            'Annulée',
   no_show:            'No show',
   terminee:           'Terminée',
+}
+
+// Toutes les valeurs de reservations.source, y compris celles qui ne se saisissent plus (reception)
+const SOURCE_LABEL = {
+  direct:    '🏨 Direct',
+  reception: '🏨 Réception',
+  telephone: '📞 Téléphone',
+  phone:     '📞 Téléphone',
+  whatsapp:  '💬 WhatsApp',
+  agence:    '🧳 Agence de voyage',
+  email:     '✉️ E-mail',
+  ota:       '🌐 OTA',
+  online:    '🌐 En ligne',
+}
+
+function libelleSource(source) {
+  if (!source) return SOURCE_LABEL.reception
+  if (SOURCE_LABEL[source]) return SOURCE_LABEL[source]
+  const texte = String(source).replace(/_/g, ' ')
+  return `🏨 ${texte.charAt(0).toUpperCase()}${texte.slice(1)}`
 }
 
 const TYPES_PAIEMENT = [
@@ -53,6 +73,8 @@ export default function DetailReservation() {
   const [arrhesModal,     setArrhesModal]     = useState(false)
   const [arrhesForm,      setArrhesForm]      = useState({ montant: '', mode_paiement: 'especes' })
   const [arrhesCreating,  setArrhesCreating]  = useState(false)
+  const [impressionEnCours, setImpressionEnCours] = useState(false)
+  const impressionRef = useRef(null)   // { iframe, blobUrl, minuteur } de la dernière impression
 
   const chargerPaiements = useCallback(async (folioId) => {
     try {
@@ -119,6 +141,9 @@ export default function DetailReservation() {
   }, [id, chargerPaiements])
 
   useEffect(() => { charger() }, [charger])
+
+  // Libère l'iframe et le blob de la dernière impression en quittant la page
+  useEffect(() => libererImpression, [])
 
   async function confirmer() {
     if (!window.confirm('Confirmer manuellement cette réservation ?')) return
@@ -223,20 +248,27 @@ export default function DetailReservation() {
     } finally { setPaying(false) }
   }
 
+  // PDF de la facture (route authentifiée) : un simple lien ne porterait pas le token.
+  // Retourne null si le serveur refuse ou ne peut pas le produire.
+  async function recupererPdfFacture() {
+    const token   = localStorage.getItem('7vh_token')
+    const hotelId = localStorage.getItem('7vh_hotel_id')
+    const url = `${API_ORIGIN}/api/v1/facturation/factures/${facture.id}/pdf`
+    const reponse = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'X-Hotel-ID': hotelId || '',
+      }
+    })
+    if (!reponse.ok) return null
+    return reponse.blob()
+  }
+
   async function telechargerFacture() {
     if (!facture?.id) return
     try {
-      const token   = localStorage.getItem('7vh_token')
-      const hotelId = localStorage.getItem('7vh_hotel_id')
-      const url = `${API_ORIGIN}/api/v1/facturation/factures/${facture.id}/pdf`
-      const res = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'X-Hotel-ID': hotelId || '',
-        }
-      })
-      if (!res.ok) { toast.error('PDF indisponible'); return }
-      const blob   = await res.blob()
+      const blob = await recupererPdfFacture()
+      if (!blob) { toast.error('PDF indisponible'); return }
       const blobUrl = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = blobUrl
@@ -244,6 +276,69 @@ export default function DetailReservation() {
       a.click()
       URL.revokeObjectURL(blobUrl)
     } catch { toast.error('Téléchargement PDF impossible') }
+  }
+
+  // L'iframe et l'URL du blob restent vivants tant que la boîte d'impression peut être ouverte :
+  // ils sont libérés à l'impression suivante ou en quittant la page.
+  function libererImpression() {
+    const session = impressionRef.current
+    if (!session) return
+    clearTimeout(session.minuteur)
+    session.iframe?.remove()
+    URL.revokeObjectURL(session.blobUrl)
+    impressionRef.current = null
+  }
+
+  // Repli quand l'iframe ne peut pas imprimer : le PDF dans un nouvel onglet, sinon le téléchargement.
+  function imprimerDansOnglet(blobUrl) {
+    const onglet = window.open(blobUrl, '_blank')
+    if (onglet) toast("PDF ouvert dans un nouvel onglet : lancez l'impression depuis cet onglet", { duration: 6000 })
+    else toast.error('Impression bloquée par le navigateur : utilisez « Télécharger la facture »', { duration: 6000 })
+  }
+
+  async function imprimerFacture() {
+    if (!facture?.id || impressionEnCours) return
+    setImpressionEnCours(true)
+    try {
+      const blob = await recupererPdfFacture()
+      if (!blob) { toast.error('PDF indisponible'); return }
+      libererImpression()
+      const blobUrl = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }))
+
+      // Sans lecteur PDF intégré (mobile notamment), l'iframe téléchargerait sans rien imprimer
+      if (navigator.pdfViewerEnabled === false) {
+        impressionRef.current = { blobUrl }
+        imprimerDansOnglet(blobUrl)
+        return
+      }
+
+      const iframe = document.createElement('iframe')
+      iframe.title = 'Impression de la facture'
+      iframe.setAttribute('aria-hidden', 'true')
+      iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'
+      const session = { iframe, blobUrl, minuteur: null }
+      impressionRef.current = session
+
+      const repli = () => {
+        iframe.remove()
+        session.iframe = null
+        imprimerDansOnglet(blobUrl)
+      }
+      iframe.onload = () => {
+        clearTimeout(session.minuteur)
+        // Court délai : le lecteur PDF n'est pas encore prêt quand l'événement load se déclenche
+        session.minuteur = setTimeout(() => {
+          try {
+            iframe.contentWindow.focus()
+            iframe.contentWindow.print()
+          } catch { repli() }
+        }, 250)
+      }
+      session.minuteur = setTimeout(repli, 10000)
+      iframe.src = blobUrl
+      document.body.appendChild(iframe)
+    } catch { toast.error('Impression du PDF impossible') }
+    finally { setImpressionEnCours(false) }
   }
 
   // ── États de chargement ────────────────────────────────────────────────────
@@ -286,7 +381,13 @@ export default function DetailReservation() {
 
       {/* Modale portail chambre après check-in */}
       {portail && (
-        <PortailModal urlPortail={portail.url} onClose={() => setPortail(null)} />
+        <PortailModal
+          urlPortail={portail.url}
+          numeroChambre={res.numero_chambre}
+          dateArrivee={res.date_arrivee}
+          dateDepart={res.date_depart}
+          onClose={() => setPortail(null)}
+        />
       )}
 
       {/* Modale confirmation check-out */}
@@ -383,6 +484,11 @@ export default function DetailReservation() {
                 🧾 Télécharger la facture
               </button>
             )}
+            {facture?.id   && (
+              <button onClick={imprimerFacture} disabled={impressionEnCours} className="btn btn-ghost btn-sm">
+                🖨️ {impressionEnCours ? 'Préparation…' : 'Imprimer la facture'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -402,7 +508,7 @@ export default function DetailReservation() {
               <div className="p-4 grid grid-cols-2 gap-4 text-sm">
                 {[
                   ['N° Réservation', <span key="nr" className="font-mono font-bold text-blue-400">{res.numero_reservation}</span>],
-                  ['Source', res.source === 'ota' ? '🌐 OTA' : res.source === 'online' ? '🌐 En ligne' : `🏨 ${res.source || 'Réception'}`],
+                  ['Source', libelleSource(res.source)],
                   ['Arrivée', fmtDate(res.date_arrivee)],
                   ['Départ',  fmtDate(res.date_depart)],
                   ['Nuits',   res.nombre_nuits || '—'],
@@ -453,9 +559,14 @@ export default function DetailReservation() {
                       {facture.montant_taxes > 0 && ` · Dont taxes : ${fmt(facture.montant_taxes, facture.devise)}`}
                     </div>
                   </div>
-                  <button onClick={telechargerFacture} className="btn btn-primary btn-sm">
-                    ↓ PDF
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={imprimerFacture} disabled={impressionEnCours} className="btn btn-ghost btn-sm">
+                      🖨️ Imprimer
+                    </button>
+                    <button onClick={telechargerFacture} className="btn btn-primary btn-sm">
+                      ↓ PDF
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

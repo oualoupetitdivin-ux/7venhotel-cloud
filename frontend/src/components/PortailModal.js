@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import toast from 'react-hot-toast'
+import { fmtDate } from '@/lib/utils'
 
 function QRCodeImg({ url, size = 160 }) {
   const [src, setSrc] = useState(null)
@@ -21,7 +22,7 @@ function QRCodeImg({ url, size = 160 }) {
   return <img src={src} alt="QR code portail" width={size} height={size} className="rounded-lg" />
 }
 
-export default function PortailModal({ urlPortail, onClose }) {
+export default function PortailModal({ urlPortail, numeroChambre, dateArrivee, dateDepart, onClose }) {
   const copier = async () => {
     try { await navigator.clipboard.writeText(urlPortail); toast.success('Lien copié !') }
     catch { toast.error('Copie impossible') }
@@ -36,6 +37,18 @@ export default function PortailModal({ urlPortail, onClose }) {
             <div className="text-xs text-[var(--text-3)] mt-0.5">Portail chambre disponible</div>
           </div>
           <button onClick={onClose} className="text-[var(--text-4)] hover:text-[var(--text-1)] text-xl">×</button>
+        </div>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          {[
+            ['Chambre', numeroChambre || '—'],
+            ['Arrivée', fmtDate(dateArrivee)],
+            ['Départ',  fmtDate(dateDepart)],
+          ].map(([label, valeur]) => (
+            <div key={label} className="bg-[var(--bg-3)] rounded-lg px-2 py-2 min-w-0">
+              <div className="text-[10px] text-[var(--text-3)] mb-0.5">{label}</div>
+              <div className="text-xs font-semibold text-[var(--text-1)] break-words">{valeur}</div>
+            </div>
+          ))}
         </div>
         <div className="flex justify-center">
           <QRCodeImg url={urlPortail} size={180} />

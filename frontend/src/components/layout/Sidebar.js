@@ -179,14 +179,14 @@ export default function Sidebar({ open = false, onClose } = {}) {
           if (itemsVisibles.length === 0) return null
           return (
           <div key={groupe.groupe}>
-            <div className="text-[8.5px] font-bold uppercase tracking-[0.1em] text-[var(--text-4)] px-2 mb-1.5">{groupe.groupe}</div>
+            <div className="text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--text-2)] px-2 mb-1.5">{groupe.groupe}</div>
             <div className="space-y-0.5">
               {itemsVisibles.map(item => {
                 const active = pathname === item.key || pathname.startsWith(item.key + '/')
                 return (
                   <Link key={item.key} href={item.key} prefetch={false} onClick={() => onClose && onClose()}
                     className={`sidebar-nav-item ${active ? 'active' : ''}`}>
-                    <span className="text-sm opacity-75 w-4 text-center flex-shrink-0">{item.icone}</span>
+                    <span className="text-[13px] opacity-75 w-[18px] text-center flex-shrink-0">{item.icone}</span>
                     <span className="flex-1">{item.label}</span>
                     {item.badge === 'new' && (
                       <span className="text-[8px] font-black bg-red-500 text-white px-1.5 py-0.5 rounded-full">3</span>

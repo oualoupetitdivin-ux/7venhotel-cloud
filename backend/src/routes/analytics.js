@@ -54,7 +54,7 @@ module.exports = async function analyticsRoutes(fastify) {
         `SELECT COUNT(*) AS total
          FROM reservations
          WHERE hotel_id = ?
-           AND date_arrivee = CURRENT_DATE
+           AND date_arrivee = (CURRENT_TIMESTAMP AT TIME ZONE 'Africa/Douala')::date
            AND statut IN ('confirmee', 'arrivee')`,
         [req.hotelId]
       ),
@@ -64,7 +64,7 @@ module.exports = async function analyticsRoutes(fastify) {
         `SELECT COUNT(*) AS total
          FROM reservations
          WHERE hotel_id = ?
-           AND date_depart = CURRENT_DATE
+           AND date_depart = (CURRENT_TIMESTAMP AT TIME ZONE 'Africa/Douala')::date
            AND statut IN ('arrivee', 'depart_aujourd_hui')`,
         [req.hotelId]
       ),

@@ -21,6 +21,15 @@ const {
 // repository/service dans la prochaine itération.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const STATUTS_RESERVATION = ['tentative', 'confirmee', 'arrivee', 'depart_aujourd_hui', 'terminee', 'annulee', 'no_show']
+
+// Date calendaire réelle au format YYYY-MM-DD (rejette 2026-02-31, qui ferait échouer PostgreSQL)
+function estDateIso(valeur) {
+  if (typeof valeur !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(valeur)) return false
+  const date = new Date(`${valeur}T00:00:00Z`)
+  return !isNaN(date) && date.toISOString().slice(0, 10) === valeur
+}
+
 module.exports = async function reservationsRoutes(fastify) {
   const pre     = [fastify.authentifier, fastify.contexteHotel]
   const preRead = [...pre, fastify.verifierPermission('reservations.lire')]
@@ -31,7 +40,18 @@ module.exports = async function reservationsRoutes(fastify) {
   // ── GET / — Liste des réservations ────────────────────────────────────────
   // Conservé inline — sera migré vers service.lister() dans l'itération suivante
   fastify.get('/', { preHandler: preRead }, async (request, reply) => {
-    const { statut, date_debut, date_fin, chambre_id, page = 1, limite = 50 } = request.query
+    // date_debut / date_fin : chevauchement de séjour (date_depart >= x, date_arrivee <= x)
+    // arrivee_le / depart_le : égalité exacte sur la date ; statuts : liste séparée par des virgules
+    const { statut, statuts, date_debut, date_fin, arrivee_le, depart_le, chambre_id, page = 1, limite = 50 } = request.query
+
+    const erreurs = []
+    if (arrivee_le !== undefined && !estDateIso(arrivee_le)) erreurs.push({ champ: 'arrivee_le', message: 'Format attendu : YYYY-MM-DD' })
+    if (depart_le  !== undefined && !estDateIso(depart_le))  erreurs.push({ champ: 'depart_le',  message: 'Format attendu : YYYY-MM-DD' })
+    const listeStatuts = statuts !== undefined ? String(statuts).split(',') : null
+    if (listeStatuts && !listeStatuts.every(s => STATUTS_RESERVATION.includes(s))) {
+      erreurs.push({ champ: 'statuts', message: 'Statut de réservation inconnu' })
+    }
+    if (erreurs.length) throw new ValidationError(erreurs)
 
     const cacheKey = `reservations:${request.hotelId}:${JSON.stringify(request.query)}`
     const cached = await fastify.cache.get(cacheKey)
@@ -61,6 +81,9 @@ module.exports = async function reservationsRoutes(fastify) {
     if (chambre_id) query = query.where('r.chambre_id', chambre_id)
     if (date_debut) query = query.where('r.date_depart',  '>=', date_debut)
     if (date_fin)   query = query.where('r.date_arrivee', '<=', date_fin)
+    if (listeStatuts) query = query.whereIn('r.statut', listeStatuts)
+    if (arrivee_le)   query = query.where('r.date_arrivee', arrivee_le)
+    if (depart_le)    query = query.where('r.date_depart',  depart_le)
 
     const offset = (parseInt(page) - 1) * parseInt(limite)
     const countQuery = fastify.db('reservations').where('hotel_id', request.hotelId)
@@ -68,6 +91,9 @@ module.exports = async function reservationsRoutes(fastify) {
     if (chambre_id) countQuery.where('chambre_id', chambre_id)
     if (date_debut) countQuery.where('date_depart',  '>=', date_debut)
     if (date_fin)   countQuery.where('date_arrivee', '<=', date_fin)
+    if (listeStatuts) countQuery.whereIn('statut', listeStatuts)
+    if (arrivee_le)   countQuery.where('date_arrivee', arrivee_le)
+    if (depart_le)    countQuery.where('date_depart',  depart_le)
 
     const [data, [{ total }]] = await Promise.all([
       query.clone().limit(parseInt(limite)).offset(offset),

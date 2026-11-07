@@ -94,7 +94,7 @@ async function chargerLogo(doc, logoUrl) {
  * genererFacturePDF(params) → { cheminRelatif, filepath }
  *
  * @param {object} params.facture     — enregistrement factures
- * @param {object} params.reservation — réservation (dates, numéro)
+ * @param {object} params.reservation — réservation (dates, numéro, numero_chambre)
  * @param {object} params.hotel       — voir chargerHotelFacture (au minimum { nom })
  * @param {object} params.client      — { nom, email, telephone }
  * @param {Array}  params.lignes      — lignes du folio ({ ...ligne, montant })
@@ -200,6 +200,7 @@ async function genererFacturePDF({
   const nuits = reservation?.nombre_nuits
   for (const [label, val] of [
     ['Réservation', reservation?.numero_reservation || '—'],
+    ['Chambre',     reservation?.numero_chambre || '—'],
     ['Arrivée',     fmtDate(reservation?.date_arrivee)],
     ['Départ',      fmtDate(reservation?.date_depart)],
     ['Nuits',       nuits != null ? String(nuits) : '—'],
